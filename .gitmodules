@@ -1,0 +1,3 @@
+[submodule "assassyn"]
+	path = assassyn
+	url = git@github.com:Synthesys-Lab/assassyn.git
