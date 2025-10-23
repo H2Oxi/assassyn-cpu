@@ -4,6 +4,7 @@
 *.exe
 build/
 bin/
+workspace/
 
 # IDE
 .vscode/

@@ -20,7 +20,8 @@ driver会把数据push给fifo接口模块，接口模块pop出的data作为value
 
 ## driver模板
 
-算术模块测试应尽可能确保对边缘情况的覆盖。并且确保ref model对数据类型的正确处理。
+算术模块测试应尽可能确保对边缘情况的覆盖。
+并且确保ref model对数据类型的正确处理。
 
 ````python
 class Driver(Module):
@@ -49,16 +50,3 @@ class Driver(Module):
         forward2.async_called(data=add_in2)
 
 ````
-
-### Uint Adder
-
-
-
-### FSM
-一个常见的时序逻辑测试场景是 Moore FSM。
-
-我们在需求中已描述了所关心的状态转移条件与状态输出。
-
-### 复杂Decoding
-
-比如CPU的decoding，我们会有一个复杂的映射表格来对照。
