@@ -1,7 +1,6 @@
 # Build artifacts
 *.o
 *.out
-*.exe
 build/
 bin/
 workspace/
