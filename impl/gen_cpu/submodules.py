@@ -1,0 +1,2 @@
+from assassyn.frontend import *
+
