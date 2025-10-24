@@ -54,8 +54,17 @@ def top():
     driver.build(stage1)
 
 
+import re
+
+
 def check(raw):
-    pass
+    for line in raw.split('\n'):
+        if '[stage2]' in line:
+            match = re.search(r'data: (\d+)', line)
+            if match:
+                data = int(match.group(1))
+                assert data % 3 == 0
+
 
 
 def sim_stall():

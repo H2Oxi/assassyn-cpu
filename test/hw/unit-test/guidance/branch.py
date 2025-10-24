@@ -3,43 +3,21 @@ import pytest
 from assassyn.frontend import *
 from assassyn.test import run_test
 
-class MergeStage(Module):
-    def __init__(self):
-        super().__init__(
-            ports={'data_branch1': Port(UInt(32)),
-                   'data_branch2': Port(UInt(32)),
-                   },
-        )
-
-    @module.combinational
-    def build(self):
-        data_branch1,data_branch2 = self.pop_all_ports(True)
-        log("[merge_stage] data_branch1: {}, data_branch2: {}", data_branch1, data_branch2)
-
-
 class Merging(Downstream):
     def __init__(self):
         super().__init__()
 
     @downstream.combinational
-    def build(self, valid1: Value, valid2: Value, data_branch1: Value, data_branch2: Value, merge_stage: MergeStage):
-        valid1 = valid1.optional(Bits(1)(0))
-        valid2 = valid2.optional(Bits(1)(0))
+    def build(self, valid1: Array, valid2: Array, data_branch1: Value, data_branch2: Value):
+        valid1_v = valid1[0]
+        valid2_v = valid2[0]
 
-        valid1_reg = RegArray(Bits(1), 1,initializer=[Bits(1)(0)])
-        valid2_reg = RegArray(Bits(1), 1,initializer=[Bits(1)(0)])
+        with Condition(valid1_v):
+            log("[merge] data_branch1: {}", data_branch1)
 
-        merge = (valid1_reg[0] & valid2_reg[0])
-
-        hold_high1 = valid1_reg[0].select(Bits(1)(1), valid1)
-        hold_high2 = valid2_reg[0].select(Bits(1)(1), valid2)
-
-        valid1_reg[0] = merge.select(Bits(1)(0), hold_high1)
-        valid2_reg[0] = merge.select(Bits(1)(0), hold_high2)
-
-
-        with Condition(merge):
-            merge_stage.async_called(data_branch1=data_branch1, data_branch2=data_branch2)
+        with Condition(valid2_v):
+            log("[merge] data_branch2: {}", data_branch2)
+            
 
 
 class Branch2(Module):
@@ -73,7 +51,7 @@ class Driver(Module):
         super().__init__(ports={})
 
     @module.combinational
-    def build(self, branch1: Branch1, branch2: Branch2):
+    def build(self, branch1: Branch1, branch2: Branch2, valid1: Array, valid2: Array):
         cnt = RegArray(UInt(32), 1)
         cnt[0] = cnt[0] + UInt(32)(1)
 
@@ -85,8 +63,11 @@ class Driver(Module):
 
         with Condition(valid2_value):
             branch2.async_called(data=cnt[0])
+        
+        valid1[0] = valid1_value
+        valid2[0] = valid2_value
 
-        return valid1_value, valid2_value
+        
 
 
 def top():
@@ -96,16 +77,15 @@ def top():
 
     branch2 = Branch2()
     data_branch2 = branch2.build()
-
-    mergestage = MergeStage()
-    mergestage.build()
+    
+    valid1 = RegArray(Bits(1),1)
+    valid2 = RegArray(Bits(1),1)
 
     driver = Driver()
-    valid1, valid2 = driver.build(branch1, branch2)
+    driver.build(branch1, branch2, valid1, valid2)
 
     merging = Merging()
-    merging.build(valid1, valid2, data_branch1, data_branch2, mergestage)
-
+    merging.build(valid1, valid2, data_branch1, data_branch2)
 
 
 
