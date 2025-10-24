@@ -26,12 +26,7 @@ module ins_decoder (
     output logic        mem_write,
     output logic        mem_wdata_sel,
     output logic [3:0]  mem_wstrb,
-    output logic [31:0] imm_i,
-    output logic [31:0] imm_s,
-    output logic [31:0] imm_b,
-    output logic [31:0] imm_u,
-    output logic [31:0] imm_j,
-    output logic [4:0]  shamt5
+    output logic [31:0] imm
 );
 
     // Instruction format encodings
@@ -127,14 +122,22 @@ module ins_decoder (
     wire [4:0] rs2_raw  = instr_in[24:20];
     wire [4:0] rd_raw   = instr_in[11:7];
 
+    // Internal immediate calculations
+    logic [31:0] imm_i_internal;
+    logic [31:0] imm_s_internal;
+    logic [31:0] imm_b_internal;
+    logic [31:0] imm_u_internal;
+    logic [31:0] imm_j_internal;
+    logic [31:0] imm_shamt_internal;
+
     always_comb begin
         // Immediate extraction (some pre-shifted per rv32i.csv intent)
-        imm_i  = {{20{instr_in[31]}}, instr_in[31:20]};
-        imm_s  = {{20{instr_in[31]}}, instr_in[31:25], instr_in[11:7]};
-        imm_b  = {{19{instr_in[31]}}, instr_in[31], instr_in[7], instr_in[30:25], instr_in[11:8], 1'b0};
-        imm_u  = {instr_in[31:12], 12'b0};
-        imm_j  = {{11{instr_in[31]}}, instr_in[31], instr_in[19:12], instr_in[20], instr_in[30:21], 1'b0};
-        shamt5 = instr_in[24:20];
+        imm_i_internal     = {{20{instr_in[31]}}, instr_in[31:20]};
+        imm_s_internal     = {{20{instr_in[31]}}, instr_in[31:25], instr_in[11:7]};
+        imm_b_internal     = {{19{instr_in[31]}}, instr_in[31], instr_in[7], instr_in[30:25], instr_in[11:8], 1'b0};
+        imm_u_internal     = {instr_in[31:12], 12'b0};
+        imm_j_internal     = {{11{instr_in[31]}}, instr_in[31], instr_in[19:12], instr_in[20], instr_in[30:21], 1'b0};
+        imm_shamt_internal = {27'b0, instr_in[24:20]}; // Zero-extend shamt to 32 bits
 
         // Default outputs
         decoded_valid = 1'b0;
@@ -169,6 +172,8 @@ module ins_decoder (
         mem_wdata_sel = MEM_WDATA_NONE;
         mem_wstrb     = 4'b0000;
 
+        imm = 32'b0; // Default immediate value
+
         unique case (opcode)
             7'b0110011: begin
                 bit valid_r = 1'b0;
@@ -200,6 +205,7 @@ module ins_decoder (
                     alu_in1_sel   = ALU_IN1_RS1;
                     alu_in2_sel   = ALU_IN2_RS2;
                     wb_data_sel   = WB_ALU;
+                    imm           = 32'b0; // R-type doesn't use immediate
                 end
             end
 
@@ -246,6 +252,8 @@ module ins_decoder (
                     alu_in1_sel   = ALU_IN1_RS1;
                     alu_in2_sel   = sel_in2;
                     wb_data_sel   = WB_ALU;
+                    // Select appropriate immediate: I-type or shamt
+                    imm           = (sel_in2 == ALU_IN2_IMM_SHAMT) ? imm_shamt_internal : imm_i_internal;
                 end
             end
 
@@ -256,6 +264,7 @@ module ins_decoder (
                 rd_write_en   = 1'b1;
                 wb_en         = (rd_raw != 5'd0);
                 wb_data_sel   = WB_IMM_LUI;
+                imm           = imm_u_internal; // U-type immediate
             end
 
             7'b0010111: begin // AUIPC
@@ -269,6 +278,7 @@ module ins_decoder (
                 add_in2_sel   = ADD_IN2_UIMM;
                 addr_purpose  = ADDR_NONE;
                 wb_data_sel   = WB_ADDER;
+                imm           = imm_u_internal; // U-type immediate
             end
 
             7'b0000011: begin // Loads
@@ -292,6 +302,7 @@ module ins_decoder (
                     addr_purpose  = ADDR_EA;
                     mem_read      = 1'b1;
                     wb_data_sel   = wb_sel;
+                    imm           = imm_i_internal; // I-type immediate for address calculation
                 end
             end
 
@@ -309,6 +320,7 @@ module ins_decoder (
                     mem_write     = 1'b1;
                     mem_wdata_sel = MEM_WDATA_RS2;
                     mem_wstrb     = 4'hF;
+                    imm           = imm_s_internal; // S-type immediate for address calculation
                 end
             end
 
@@ -336,6 +348,7 @@ module ins_decoder (
                     add_in1_sel   = ADD_IN1_PC;
                     add_in2_sel   = ADD_IN2_IMM_B;
                     addr_purpose  = ADDR_BR;
+                    imm           = imm_b_internal; // B-type immediate for branch target
                 end
             end
 
@@ -350,6 +363,7 @@ module ins_decoder (
                 add_in2_sel   = ADD_IN2_IMM_J;
                 addr_purpose  = ADDR_BR;
                 wb_data_sel   = WB_PC_PLUS4;
+                imm           = imm_j_internal; // J-type immediate for jump target
             end
 
             7'b1100111: begin // JALR
@@ -366,6 +380,7 @@ module ins_decoder (
                     add_postproc  = ADD_POST_CLR_LSB;
                     addr_purpose  = ADDR_IND;
                     wb_data_sel   = WB_PC_PLUS4;
+                    imm           = imm_i_internal; // I-type immediate for indirect jump
                 end
             end
 

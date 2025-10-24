@@ -62,12 +62,7 @@ class InsDecoder(ExternalSV):
     mem_wdata_sel: WireOut[Bits(1)]  # MemWDataSel encoding
     mem_wstrb: WireOut[Bits(4)]  # Byte enables for stores
 
-    imm_i: WireOut[UInt(32)]  # Sign-extended I-type immediate
-    imm_s: WireOut[UInt(32)]  # Sign-extended S-type immediate
-    imm_b: WireOut[UInt(32)]  # Sign-extended B-type offset (already <<1)
-    imm_u: WireOut[UInt(32)]  # U-type immediate (shifted <<12)
-    imm_j: WireOut[UInt(32)]  # Sign-extended J-type offset (already <<1)
-    shamt5: WireOut[UInt(5)]  # Shift amount field (lowest 5 bits)
+    imm: WireOut[UInt(32)]  # Unified immediate output (type determined by instruction format and sel signals)
 
     __source__: str = "../impl/external_src/ins_decoder.sv"
     __module_name__: str = "ins_decoder"

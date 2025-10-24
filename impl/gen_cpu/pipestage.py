@@ -8,6 +8,8 @@ from assassyn.frontend import *
 from assassyn.backend import *
 from assassyn import utils
 
+from impl.ip.ips import *
+
 ''' Define the pipeline stages'''
 
 class Fetchor(Module):
