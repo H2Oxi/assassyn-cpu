@@ -39,7 +39,7 @@ class Decoder(Module):
         # we should generate the input given to executor here(ALU signals, immediate values.)
         #alu_a, alu_b, alu_op = decoding_logic(instruction_code)
 
-        # valid checker
+        #valid checker
         #valid = valid_checker(signals)
 
         # downstream: oprand_bypass

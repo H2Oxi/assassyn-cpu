@@ -89,7 +89,8 @@ The script confirms the expected environment variables and attempts to import
 
 ## todo in the future
 
+- 对于decoder这种超大规模的组合电路的测试，ci-test？有什么比较合理方便的测试方法。现在是硬编码检查是否覆盖关键词来实现的测试。
 - 更高效的提供架构抽象
-- 更精确的docs以节约tokens
+- 更精确的docs
 - 提供更规范化的可定制开发框架
 

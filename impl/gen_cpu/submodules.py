@@ -69,5 +69,5 @@ class InsDecoder(ExternalSV):
     imm_j: WireOut[UInt(32)]  # Sign-extended J-type offset (already <<1)
     shamt5: WireOut[UInt(5)]  # Shift amount field (lowest 5 bits)
 
-    __source__: str = "../impl/gen_cpu/external_src/ins_decoder.sv"
+    __source__: str = "../impl/external_src/ins_decoder.sv"
     __module_name__: str = "ins_decoder"

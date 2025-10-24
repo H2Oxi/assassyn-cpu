@@ -60,6 +60,6 @@ def test_enum_alignment_basic():
 
 
 def test_system_verilog_presence():
-    content = Path('impl/gen_cpu/external_src/ins_decoder.sv').read_text()
+    content = Path('impl/external_src/ins_decoder.sv').read_text()
     for keyword in ['ALU_ADD', 'ALU_SUB', 'ADDER_EA', 'ADDER_J_TARGET']:
         assert keyword in content, f"Expected assignment '{keyword}' not found"
