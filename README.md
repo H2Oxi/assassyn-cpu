@@ -87,11 +87,9 @@ The script confirms the expected environment variables and attempts to import
 
 ---
 
-## Troubleshooting
+## todo in the future
 
-- `FileNotFoundError` for `libwrapper`: rerun `make -C assassyn build-wrapper`
-  to rebuild Ramulator2 and the C wrapper, then rerun `test_env.py`.
-- Missing submodule content: ensure `git submodule update --init --recursive`
-  completed successfully before sourcing the environment script.
-- Stale environment variables: re-run `source setup-env.sh` in any new shell
-  before importing `assassyn`.
+- 更高效的提供架构抽象
+- 更精确的docs以节约tokens
+- 提供更规范化的可定制开发框架
+
