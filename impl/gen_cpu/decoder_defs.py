@@ -1,6 +1,7 @@
 """Shared enums and constants for the generated instruction decoder."""
 
 from enum import IntEnum
+from assassyn.frontend import Record, UInt, Bits
 
 
 class InstrFormat(IntEnum):
@@ -99,3 +100,35 @@ class WbDataSel(IntEnum):
 class MemWDataSel(IntEnum):
     NONE = 0
     RS2 = 1
+
+
+# Decoder output Record type
+DecoderOutputType = Record(
+    decoded_valid=Bits(1),
+    illegal=Bits(1),
+    instr_format=UInt(3),
+    rs1_addr=UInt(5),
+    rs2_addr=UInt(5),
+    rd_addr=UInt(5),
+    rs1_used=Bits(1),
+    rs2_used=Bits(1),
+    rd_write_en=Bits(1),
+    alu_en=Bits(1),
+    alu_op=UInt(4),
+    alu_in1_sel=UInt(2),
+    alu_in2_sel=UInt(2),
+    cmp_op=UInt(3),
+    cmp_out_used=Bits(1),
+    adder_use=UInt(3),
+    add_in1_sel=UInt(2),
+    add_in2_sel=UInt(3),
+    add_postproc=Bits(1),
+    addr_purpose=UInt(3),
+    wb_data_sel=UInt(3),
+    wb_en=Bits(1),
+    mem_read=Bits(1),
+    mem_write=Bits(1),
+    mem_wdata_sel=Bits(1),
+    mem_wstrb=Bits(4),
+    imm=UInt(32),
+)
