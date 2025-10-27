@@ -116,8 +116,8 @@ class Decoder(Module):
 
         # Handle illegal instructions
         with Condition(~valid):
-            log("Illegal instruction at address: 0x{:08X}, instruction: 0x{:08X}".format(
-                fetch_addr.as_int(), instruction_code.as_int()))
+            log("Illegal instruction at address: 0x{:08x}, instruction: 0x{:08x}",
+                fetch_addr, instruction_code)
             finish()
 
         # Return signals needed for regfile read:
@@ -163,52 +163,33 @@ class Executor(Module):
 
     @module.combinational
     def build(self, memory_accessor: Module, RS1_data: Array, RS2_data: Array,
-              imm_data: Array, init_file: str, depth_log: int = 9):
+              init_file: str, depth_log: int = 9):
         """Execute ALU operations, address calculation, and memory access
 
         Args:
             memory_accessor: MemoryAccessor module for next pipeline stage
             RS1_data: Register file rs1 read data
             RS2_data: Register file rs2 read data
-            imm_data: Immediate value from decoder
             init_file: Data cache initialization file
             depth_log: Log2 of data cache depth (default 9 = 512 entries)
         """
         # Pop all control signals from ports
-        fetch_addr = self.pop_port('fetch_addr')
-        alu_en = self.pop_port('alu_en')
-        alu_in1_sel = self.pop_port('alu_in1_sel')
-        alu_in2_sel = self.pop_port('alu_in2_sel')
-        alu_op = self.pop_port('alu_op')
-        cmp_op = self.pop_port('cmp_op')
-
-        adder_use = self.pop_port('adder_use')
-        add_in1_sel = self.pop_port('add_in1_sel')
-        add_in2_sel = self.pop_port('add_in2_sel')
-        add_postproc = self.pop_port('add_postproc')
-        addr_purpose = self.pop_port('addr_purpose')
-
-        mem_read = self.pop_port('mem_read')
-        mem_write = self.pop_port('mem_write')
-        mem_wdata_sel = self.pop_port('mem_wdata_sel')
-        mem_wstrb = self.pop_port('mem_wstrb')
-
-        wb_data_sel = self.pop_port('wb_data_sel')
-        wb_en = self.pop_port('wb_en')
-        rd_addr = self.pop_port('rd_addr')
-        imm = self.pop_port('imm')
+        (fetch_addr, alu_en, alu_in1_sel, alu_in2_sel, alu_op, cmp_op,
+         adder_use, add_in1_sel, add_in2_sel, add_postproc, addr_purpose,
+         mem_read, mem_write, mem_wdata_sel, mem_wstrb,
+         wb_data_sel, wb_en, rd_addr, imm) = self.pop_all_ports(False)
 
         # ========== ALU Input Selection ==========
         # Select ALU input 1: ZERO or RS1
-        alu_in1 = (alu_in1_sel == UInt(2)(AluIn1Sel.RS1)).select(
+        alu_in1 = (alu_in1_sel == UInt(2)(AluIn1Sel.RS1.value)).select(
             RS1_data[0],
             UInt(32)(0)  # ZERO
         )
 
         # Select ALU input 2: ZERO, RS2, or IMM
         alu_in2 = UInt(32)(0)  # default ZERO
-        alu_in2 = (alu_in2_sel == UInt(2)(AluIn2Sel.RS2)).select(RS2_data[0], alu_in2)
-        alu_in2 = (alu_in2_sel == UInt(2)(AluIn2Sel.IMM)).select(imm_data[0], alu_in2)
+        alu_in2 = (alu_in2_sel == UInt(2)(AluIn2Sel.RS2.value)).select(RS2_data[0], alu_in2)
+        alu_in2 = (alu_in2_sel == UInt(2)(AluIn2Sel.IMM.value)).select(imm, alu_in2)
 
         # Instantiate ALU
         alu = ALU(
@@ -221,13 +202,13 @@ class Executor(Module):
         # ========== Adder Input Selection ==========
         # Select adder input 1: ZERO, RS1, or PC
         add_in1 = UInt(32)(0)  # default ZERO
-        add_in1 = (add_in1_sel == UInt(2)(AddIn1Sel.RS1)).select(RS1_data[0], add_in1)
-        add_in1 = (add_in1_sel == UInt(2)(AddIn1Sel.PC)).select(
+        add_in1 = (add_in1_sel == UInt(2)(AddIn1Sel.RS1.value)).select(RS1_data[0], add_in1)
+        add_in1 = (add_in1_sel == UInt(2)(AddIn1Sel.PC.value)).select(
             fetch_addr.bitcast(UInt(32)), add_in1)
 
         # Select adder input 2: ZERO or IMM
-        add_in2 = (add_in2_sel == Bits(1)(AddIn2Sel.IMM)).select(
-            imm_data[0],
+        add_in2 = (add_in2_sel == Bits(1)(AddIn2Sel.IMM.value)).select(
+            imm,
             UInt(32)(0)  # ZERO
         )
 
@@ -238,9 +219,12 @@ class Executor(Module):
         )
 
         # Apply post-processing: clear LSB if needed (for JALR)
+        # Ensure both branches have the same type (UInt(32))
+        add_out_uint = adder.add_out.bitcast(UInt(32))  # Ensure UInt(32)
+        masked_out = (add_out_uint & UInt(32)(0xFFFFFFFE)).bitcast(UInt(32))  # Clear LSB
         adder_result = (add_postproc == Bits(1)(1)).select(
-            adder.add_out & UInt(32)(0xFFFFFFFE),  # Clear LSB
-            adder.add_out
+            masked_out,  # UInt(32)
+            add_out_uint  # UInt(32)
         )
 
         # ========== Data Memory (dcache) ==========
@@ -251,7 +235,7 @@ class Executor(Module):
         mem_addr = adder_result[2:2+depth_log-1].bitcast(UInt(depth_log))
 
         # Memory write data selection: RS2
-        mem_wdata = (mem_wdata_sel == Bits(1)(MemWDataSel.RS2)).select(
+        mem_wdata = (mem_wdata_sel == Bits(1)(MemWDataSel.RS2.value)).select(
             RS2_data[0].bitcast(Bits(32)),
             Bits(32)(0)
         )
@@ -309,39 +293,33 @@ class MemoryAccessor(Module):
             Selected writeback data based on wb_data_sel
         """
         # Pop all signals from ports
-        alu_out = self.pop_port('alu_out')
-        cmp_out = self.pop_port('cmp_out')
-        adder_out = self.pop_port('adder_out')
-        imm = self.pop_port('imm')
-        fetch_addr = self.pop_port('fetch_addr')
-        wb_data_sel = self.pop_port('wb_data_sel')
-        wb_en = self.pop_port('wb_en')
-        rd_addr = self.pop_port('rd_addr')
+        (alu_out, cmp_out, adder_out, imm, fetch_addr,
+         wb_data_sel, wb_en, rd_addr) = self.pop_all_ports(False)
 
         # ========== Writeback Data Selection ==========
         # Default to NONE (zero)
         wb_data = UInt(32)(0)
 
         # Select based on wb_data_sel
-        wb_data = (wb_data_sel == UInt(3)(WbDataSel.ALU)).select(
+        wb_data = (wb_data_sel == UInt(3)(WbDataSel.ALU.value)).select(
             alu_out, wb_data)
 
-        wb_data = (wb_data_sel == UInt(3)(WbDataSel.IMM)).select(
+        wb_data = (wb_data_sel == UInt(3)(WbDataSel.IMM.value)).select(
             imm, wb_data)
 
-        wb_data = (wb_data_sel == UInt(3)(WbDataSel.ADDER)).select(
+        wb_data = (wb_data_sel == UInt(3)(WbDataSel.ADDER.value)).select(
             adder_out, wb_data)
 
-        wb_data = (wb_data_sel == UInt(3)(WbDataSel.LOAD)).select(
-            mem_rdata[0], wb_data)
+        wb_data = (wb_data_sel == UInt(3)(WbDataSel.LOAD.value)).select(
+            mem_rdata[0].bitcast(UInt(32)), wb_data)
 
-        wb_data = (wb_data_sel == UInt(3)(WbDataSel.LOAD_ZEXT8)).select(
-            mem_rdata[0] & UInt(32)(0xFF),  # Zero-extend byte
+        wb_data = (wb_data_sel == UInt(3)(WbDataSel.LOAD_ZEXT8.value)).select(
+            (mem_rdata[0].bitcast(UInt(32)) & UInt(32)(0xFF)).bitcast(UInt(32)),  # Zero-extend byte
             wb_data)
 
         # PC+4 for JAL/JALR return address
         pc_plus4 = fetch_addr.bitcast(UInt(32)) + UInt(32)(4)
-        wb_data = (wb_data_sel == UInt(3)(WbDataSel.PC_PLUS4)).select(
+        wb_data = (wb_data_sel == UInt(3)(WbDataSel.PC_PLUS4.value)).select(
             pc_plus4, wb_data)
 
         # ========== Pass to WriteBack ==========

@@ -76,18 +76,14 @@ def top(icache_init_file: str, dcache_init_file: str, depth_log: int = 9):
         rd_wdata=rd_data    # From WriteBack
     )
 
-    # Convert imm (Value) to RegArray for Executor
+    # Connect Executor with regfile data
     # Note: rs1_data and rs2_data are RegOut from ExternalSV (RegFile)
-    # and can be used directly as Array
-    imm_array = RegArray(UInt(32), 1)
-    imm_array[0] = imm
-
-    # Now connect Executor with regfile data
+    # and can be used directly as Array. imm is passed via Port through
+    # Decoder's async_called, so we don't need to pass it here.
     dcache = executor.build(
         memory_accessor=memory_accessor,
         RS1_data=rs1_data,  # RegOut can be used as Array directly
         RS2_data=rs2_data,  # RegOut can be used as Array directly
-        imm_data=imm_array,
         init_file=dcache_init_file,
         depth_log=depth_log
     )
