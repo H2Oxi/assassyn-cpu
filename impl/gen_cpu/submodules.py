@@ -50,7 +50,7 @@ class InsDecoder(ExternalSV):
 
     adder_use: WireOut[UInt(3)]  # AdderUse encoding
     add_in1_sel: WireOut[UInt(2)]  # AddIn1Sel encoding
-    add_in2_sel: WireOut[UInt(3)]  # AddIn2Sel encoding
+    add_in2_sel: WireOut[Bits(1)]  # AddIn2Sel encoding (0=ZERO, 1=IMM)
     add_postproc: WireOut[Bits(1)]  # 1 => clear LSB, see AddPostproc
     addr_purpose: WireOut[UInt(3)]  # AddrPurpose encoding
 

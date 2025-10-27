@@ -46,8 +46,7 @@ class AluIn1Sel(IntEnum):
 class AluIn2Sel(IntEnum):
     ZERO = 0
     RS2 = 1
-    IMM_I = 2
-    IMM_SHAMT5 = 3
+    IMM = 2  # Unified immediate (decoder handles all types)
 
 
 class AdderUse(IntEnum):
@@ -67,11 +66,7 @@ class AddIn1Sel(IntEnum):
 
 class AddIn2Sel(IntEnum):
     ZERO = 0
-    IMM_I = 1
-    IMM_S = 2
-    IMM_B_SHL1 = 3
-    IMM_J_SHL1 = 4
-    UIMM_SHL12 = 5
+    IMM = 1  # Unified immediate (decoder handles all types)
 
 
 class AddPostproc(IntEnum):
@@ -90,7 +85,7 @@ class AddrPurpose(IntEnum):
 class WbDataSel(IntEnum):
     NONE = 0
     ALU = 1
-    IMM_LUI = 2
+    IMM = 2  # Immediate writeback (unified, e.g., for LUI)
     ADDER = 3
     LOAD = 4
     LOAD_ZEXT8 = 5
@@ -121,7 +116,7 @@ DecoderOutputType = Record(
     cmp_out_used=Bits(1),
     adder_use=UInt(3),
     add_in1_sel=UInt(2),
-    add_in2_sel=UInt(3),
+    add_in2_sel=Bits(1),
     add_postproc=Bits(1),
     addr_purpose=UInt(3),
     wb_data_sel=UInt(3),

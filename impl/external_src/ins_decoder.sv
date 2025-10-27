@@ -17,7 +17,7 @@ module ins_decoder (
     output logic        cmp_out_used,
     output logic [2:0]  adder_use,
     output logic [1:0]  add_in1_sel,
-    output logic [2:0]  add_in2_sel,
+    output logic        add_in2_sel,
     output logic        add_postproc,
     output logic [2:0]  addr_purpose,
     output logic [2:0]  wb_data_sel,
@@ -66,8 +66,7 @@ module ins_decoder (
 
     localparam logic [1:0] ALU_IN2_ZERO      = 2'd0;
     localparam logic [1:0] ALU_IN2_RS2       = 2'd1;
-    localparam logic [1:0] ALU_IN2_IMM_I     = 2'd2;
-    localparam logic [1:0] ALU_IN2_IMM_SHAMT = 2'd3;
+    localparam logic [1:0] ALU_IN2_IMM       = 2'd2;  // Unified immediate
 
     // Adder usage codes
     localparam logic [2:0] ADDER_NONE        = 3'd0;
@@ -82,12 +81,8 @@ module ins_decoder (
     localparam logic [1:0] ADD_IN1_RS1       = 2'd1;
     localparam logic [1:0] ADD_IN1_PC        = 2'd2;
 
-    localparam logic [2:0] ADD_IN2_ZERO      = 3'd0;
-    localparam logic [2:0] ADD_IN2_IMM_I     = 3'd1;
-    localparam logic [2:0] ADD_IN2_IMM_S     = 3'd2;
-    localparam logic [2:0] ADD_IN2_IMM_B     = 3'd3;
-    localparam logic [2:0] ADD_IN2_IMM_J     = 3'd4;
-    localparam logic [2:0] ADD_IN2_UIMM      = 3'd5;
+    localparam logic ADD_IN2_ZERO            = 1'b0;
+    localparam logic ADD_IN2_IMM             = 1'b1;  // Unified immediate
 
     // Adder post processing
     localparam logic ADD_POST_NONE           = 1'b0;
@@ -103,7 +98,7 @@ module ins_decoder (
     // Writeback selectors
     localparam logic [2:0] WB_NONE           = 3'd0;
     localparam logic [2:0] WB_ALU            = 3'd1;
-    localparam logic [2:0] WB_IMM_LUI        = 3'd2;
+    localparam logic [2:0] WB_IMM            = 3'd2;  // Unified immediate writeback
     localparam logic [2:0] WB_ADDER          = 3'd3;
     localparam logic [2:0] WB_LOAD           = 3'd4;
     localparam logic [2:0] WB_LOAD_ZEXT8     = 3'd5;
@@ -212,28 +207,28 @@ module ins_decoder (
             7'b0010011: begin
                 bit valid_i = 1'b0;
                 logic [3:0] sel_op = ALU_ADD;
-                logic [1:0] sel_in2 = ALU_IN2_IMM_I;
+                logic use_shamt = 1'b0;
                 unique case (funct3)
-                    3'b000: begin valid_i = 1'b1; sel_op = ALU_ADD; sel_in2 = ALU_IN2_IMM_I; end // addi
-                    3'b111: begin valid_i = 1'b1; sel_op = ALU_AND; sel_in2 = ALU_IN2_IMM_I; end // andi
-                    3'b110: begin valid_i = 1'b1; sel_op = ALU_OR;  sel_in2 = ALU_IN2_IMM_I; end // ori
-                    3'b100: begin valid_i = 1'b1; sel_op = ALU_XOR; sel_in2 = ALU_IN2_IMM_I; end // xori
+                    3'b000: begin valid_i = 1'b1; sel_op = ALU_ADD; use_shamt = 1'b0; end // addi
+                    3'b111: begin valid_i = 1'b1; sel_op = ALU_AND; use_shamt = 1'b0; end // andi
+                    3'b110: begin valid_i = 1'b1; sel_op = ALU_OR;  use_shamt = 1'b0; end // ori
+                    3'b100: begin valid_i = 1'b1; sel_op = ALU_XOR; use_shamt = 1'b0; end // xori
                     3'b001: begin
                         if (funct7 == 7'b0000000) begin
                             valid_i = 1'b1;
                             sel_op  = ALU_SLL;
-                            sel_in2 = ALU_IN2_IMM_SHAMT;
+                            use_shamt = 1'b1;
                         end
                     end // slli
                     3'b101: begin
                         if (funct7 == 7'b0000000) begin
                             valid_i = 1'b1;
                             sel_op  = ALU_SRL;
-                            sel_in2 = ALU_IN2_IMM_SHAMT;
+                            use_shamt = 1'b1;
                         end else if (funct7 == 7'b0100000) begin
                             valid_i = 1'b1;
                             sel_op  = ALU_SRA;
-                            sel_in2 = ALU_IN2_IMM_SHAMT;
+                            use_shamt = 1'b1;
                         end
                     end // srli/srai
                     default: begin
@@ -250,10 +245,10 @@ module ins_decoder (
                     alu_en        = 1'b1;
                     alu_op        = sel_op;
                     alu_in1_sel   = ALU_IN1_RS1;
-                    alu_in2_sel   = sel_in2;
+                    alu_in2_sel   = ALU_IN2_IMM;
                     wb_data_sel   = WB_ALU;
                     // Select appropriate immediate: I-type or shamt
-                    imm           = (sel_in2 == ALU_IN2_IMM_SHAMT) ? imm_shamt_internal : imm_i_internal;
+                    imm           = use_shamt ? imm_shamt_internal : imm_i_internal;
                 end
             end
 
@@ -263,7 +258,7 @@ module ins_decoder (
                 instr_format  = FMT_U;
                 rd_write_en   = 1'b1;
                 wb_en         = (rd_raw != 5'd0);
-                wb_data_sel   = WB_IMM_LUI;
+                wb_data_sel   = WB_IMM;
                 imm           = imm_u_internal; // U-type immediate
             end
 
@@ -275,7 +270,7 @@ module ins_decoder (
                 wb_en         = (rd_raw != 5'd0);
                 adder_use     = ADDER_PC_REL;
                 add_in1_sel   = ADD_IN1_PC;
-                add_in2_sel   = ADD_IN2_UIMM;
+                add_in2_sel   = ADD_IN2_IMM;
                 addr_purpose  = ADDR_NONE;
                 wb_data_sel   = WB_ADDER;
                 imm           = imm_u_internal; // U-type immediate
@@ -298,7 +293,7 @@ module ins_decoder (
                     wb_en         = (rd_raw != 5'd0);
                     adder_use     = ADDER_EA;
                     add_in1_sel   = ADD_IN1_RS1;
-                    add_in2_sel   = ADD_IN2_IMM_I;
+                    add_in2_sel   = ADD_IN2_IMM;
                     addr_purpose  = ADDR_EA;
                     mem_read      = 1'b1;
                     wb_data_sel   = wb_sel;
@@ -315,7 +310,7 @@ module ins_decoder (
                     rs2_used      = 1'b1;
                     adder_use     = ADDER_EA;
                     add_in1_sel   = ADD_IN1_RS1;
-                    add_in2_sel   = ADD_IN2_IMM_S;
+                    add_in2_sel   = ADD_IN2_IMM;
                     addr_purpose  = ADDR_EA;
                     mem_write     = 1'b1;
                     mem_wdata_sel = MEM_WDATA_RS2;
@@ -346,7 +341,7 @@ module ins_decoder (
                     cmp_out_used  = 1'b1;
                     adder_use     = ADDER_BR_TARGET;
                     add_in1_sel   = ADD_IN1_PC;
-                    add_in2_sel   = ADD_IN2_IMM_B;
+                    add_in2_sel   = ADD_IN2_IMM;
                     addr_purpose  = ADDR_BR;
                     imm           = imm_b_internal; // B-type immediate for branch target
                 end
@@ -360,7 +355,7 @@ module ins_decoder (
                 wb_en         = (rd_raw != 5'd0);
                 adder_use     = ADDER_J_TARGET;
                 add_in1_sel   = ADD_IN1_PC;
-                add_in2_sel   = ADD_IN2_IMM_J;
+                add_in2_sel   = ADD_IN2_IMM;
                 addr_purpose  = ADDR_BR;
                 wb_data_sel   = WB_PC_PLUS4;
                 imm           = imm_j_internal; // J-type immediate for jump target
@@ -376,7 +371,7 @@ module ins_decoder (
                     wb_en         = (rd_raw != 5'd0);
                     adder_use     = ADDER_IND_TARGET;
                     add_in1_sel   = ADD_IN1_RS1;
-                    add_in2_sel   = ADD_IN2_IMM_I;
+                    add_in2_sel   = ADD_IN2_IMM;
                     add_postproc  = ADD_POST_CLR_LSB;
                     addr_purpose  = ADDR_IND;
                     wb_data_sel   = WB_PC_PLUS4;
