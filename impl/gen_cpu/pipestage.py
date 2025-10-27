@@ -1,5 +1,4 @@
-''' A simplest single issue RISCV CPU, which has no operand buffer.
-'''
+''' A simplest single issue RISCV CPU, which has no operand buffer.'''
 import os
 import shutil
 import subprocess
@@ -21,12 +20,11 @@ class Fetchor(Module):
         self.name = 'F'
 
     @module.combinational
-    def build(self):
-        pc_reg = RegArray(Bits(32), 1)
-        addr = pc_reg[0]
+    def build(self,fetch_valid:Array, decoder: Module, pc_reg: Array):
 
-        return pc_reg, addr
-    
+        with Condition(fetch_valid[0]):
+            decoder.async_called(fetch_addr=pc_reg[0])
+
 class Decoder(Module):
     
     def __init__(self):
@@ -74,40 +72,45 @@ class Decoder(Module):
             imm=decoder.imm,
         )
 
+        valid=decoder_output.decoded_valid & (~decoder_output.illegal)
+        with Condition(valid):
+            executor.async_called(
+                fetch_addr=fetch_addr,
+
+                )
+        
+        with Condition(~valid):
+            log("Illegal instruction at address: 0x{:08X}, instruction: 0x{:08X}".format(fetch_addr.as_int(), instruction_code.as_int()))
+            finish()
+        
         return decoder_output
 
-        # we should generate the input given to executor here(ALU signals, immediate values.)
-        #alu_a, alu_b, alu_op = decoding_logic(instruction_code)
 
-        #valid checker
-        #valid = valid_checker(signals)
-
-        #downstream: oprand_bypass
-        #executor.async_called(valid=valid, alu_a=alu_a, alu_b=alu_b, alu_op=alu_op, fetch_addr=fetch_addr)
-
-        
 
 
 class Executor(Module):
     
     def __init__(self):
         super().__init__(ports={
-            'valid': Port(),
-            'alu_a': Port(),
-            'alu_b': Port(),
-            'alu_op': Port(Bits(4)),
             'fetch_addr': Port(Bits(32)),
+            'alu_en': Port(Bits(1)),
+            'alu_in1_sel': Port(Bits(2)),
+            'alu_in2_sel': Port(Bits(2)),
+            'alu_op': Port(Bits(4)),
+            'cmp_op': Port(Bits(3)),
+
         })
         self.name = 'E'
 
     @module.combinational
-    def build(self):
-        
-        valid = self.pop_port('valid')
-        wait_until(valid)
+    def build(self, memory_accessor: Module):
+        fetch_addr = self.pop_port('fetch_addr')
 
         # instantiation of ALU, and other arithmetic units should be done here.
+        
         pass
+        
+
 
 
 class MemoryAccessor(Module):
@@ -117,7 +120,7 @@ class MemoryAccessor(Module):
         self.name = 'M'
     
     @module.combinational
-    def build(self):
+    def build(self, write_back: Module):
 
 
         pass
