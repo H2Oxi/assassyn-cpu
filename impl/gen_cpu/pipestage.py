@@ -7,7 +7,7 @@ from assassyn.frontend import *
 from assassyn.backend import *
 from assassyn import utils
 
-from impl.ip.ips import *
+from impl.ip.ips import ALU
 from impl.gen_cpu.submodules import InsDecoder
 from impl.gen_cpu.decoder_defs import DecoderOutputType
 
@@ -76,14 +76,24 @@ class Decoder(Module):
         with Condition(valid):
             executor.async_called(
                 fetch_addr=fetch_addr,
+                alu_en=decoder_output.alu_en,
+                alu_in1_sel=decoder_output.alu_in1_sel,
+                alu_in2_sel=decoder_output.alu_in2_sel,
+                alu_op=decoder_output.alu_op,
+                cmp_op=decoder_output.cmp_op,
 
                 )
         
         with Condition(~valid):
             log("Illegal instruction at address: 0x{:08X}, instruction: 0x{:08X}".format(fetch_addr.as_int(), instruction_code.as_int()))
             finish()
-        
-        return decoder_output
+
+
+
+
+
+        return decoder_output.rs1_addr, decoder_output.rs2_addr, decoder_output.rd_addr, \
+            decoder_output.rd_write_en
 
 
 
@@ -103,11 +113,26 @@ class Executor(Module):
         self.name = 'E'
 
     @module.combinational
-    def build(self, memory_accessor: Module):
+    def build(self, memory_accessor: Module, RS1_data: Array, RS2_data: Array,init_file):
         fetch_addr = self.pop_port('fetch_addr')
 
+        # selecting logic
+
+
+
         # instantiation of ALU, and other arithmetic units should be done here.
-        
+        alu = ALU(
+            alu_in1=...,
+            alu_in2=...,
+            alu_op=self.pop_port('alu_op'),
+            cmp_op=self.pop_port('cmp_op'),
+        )
+
+        dcache = SRAM(width=32, depth=512, init_file=init_file)
+        dcache.name = 'dcache'
+        # memory instantiation logic should be done here.
+
+
         pass
         
 

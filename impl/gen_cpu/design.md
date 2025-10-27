@@ -50,7 +50,7 @@ get data from dcache
 
 #### WriteBack
 
-write data to dcache
+write data to regfile
 
 ## dreaming workflow for cpu impl generation
 
