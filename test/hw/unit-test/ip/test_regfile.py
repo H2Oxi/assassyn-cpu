@@ -1,111 +1,109 @@
 from assassyn.frontend import *
-from assassyn.test import run_test
+from assassyn.test import (
+    run_test,
+    StimulusTimeline,
+    StimulusDriver,
+    LogChecker,
+    PrefixExtractor,
+    KeyValueParser,
+)
 from impl.ip.ips import RegFile as ExternalRegFile
 
 from assassyn.backend import elaborate
 from assassyn import utils
 
 
+def _build_regfile_stimulus():
+    timeline = StimulusTimeline()
+    timeline.signal('rs1_addr', UInt(5)).case_map({
+        0: 0,
+        1: 1,
+        2: 2,
+        3: 1,
+        10: 5,
+        11: 5,
+        12: 0,
+        20: 10,
+        21: 15,
+        22: 31,
+        30: 7,
+        31: 7,
+    }, default=0)
+
+    timeline.signal('rs2_addr', UInt(5)).case_map({
+        0: 0,
+        1: 2,
+        2: 1,
+        3: 2,
+        10: 6,
+        11: 6,
+        12: 0,
+        20: 11,
+        21: 16,
+        22: 30,
+        30: 8,
+        31: 7,
+    }, default=0)
+
+    timeline.signal('rd_we', Bits(1)).case_map({
+        0: 1,
+        1: 1,
+        2: 0,
+        3: 0,
+        10: 1,
+        11: 0,
+        12: 1,
+        20: 1,
+        21: 1,
+        22: 1,
+        30: 1,
+        31: 0,
+    }, default=0)
+
+    timeline.signal('rd_addr', UInt(5)).case_map({
+        0: 1,
+        1: 2,
+        10: 5,
+        12: 0,
+        20: 10,
+        21: 15,
+        22: 31,
+        30: 7,
+    }, default=0)
+
+    timeline.signal('rd_wdata', UInt(32)).case_map({
+        0: 0xDEADBEEF,
+        1: 0x12345678,
+        10: 0xAAAAAAAA,
+        12: 0xFFFFFFFF,
+        20: 0x11111111,
+        21: 0x22222222,
+        22: 0x33333333,
+        30: 0xBBBBBBBB,
+    }, default=0)
+
+    return timeline
+
+
 class Driver(Module):
 
-    def __init__(self):
+    def __init__(self, timeline: StimulusTimeline):
         super().__init__(ports={})
+        self.timeline = timeline
 
     @module.combinational
     def build(self, forward_rs1: Module, forward_rs2: Module,
               forward_we: Module, forward_rd_addr: Module, forward_rd_wdata: Module):
-        cnt = RegArray(UInt(32), 1)
-        cnt[0] = cnt[0] + UInt(32)(1)
+        cnt = self.timeline.build_counter()
+        cnt[0] = cnt[0] + self.timeline.counter_dtype(self.timeline.step)
 
-        # Test sequence covering various scenarios
-        rs1_addr = cnt[0].case({
-            # Basic read tests
-            UInt(32)(0): UInt(5)(0),   # Read x0
-            UInt(32)(1): UInt(5)(1),   # Read x1 (after write)
-            UInt(32)(2): UInt(5)(2),   # Read x2 (after write)
-            UInt(32)(3): UInt(5)(1),   # Read x1 again
-            # Bypass test: read while writing
-            UInt(32)(10): UInt(5)(5),  # Will be written in same cycle
-            UInt(32)(11): UInt(5)(5),  # Read back after bypass
-            UInt(32)(12): UInt(5)(0),  # Read x0 during write to x0
-            # Read various registers
-            UInt(32)(20): UInt(5)(10),
-            UInt(32)(21): UInt(5)(15),
-            UInt(32)(22): UInt(5)(31), # Last register
-            UInt(32)(30): UInt(5)(7),  # Read for bypass test
-            UInt(32)(31): UInt(5)(7),  # Read same after bypass
-            None: UInt(5)(0),
-        })
-
-        rs2_addr = cnt[0].case({
-            UInt(32)(0): UInt(5)(0),   # Read x0
-            UInt(32)(1): UInt(5)(2),   # Read x2 (after write)
-            UInt(32)(2): UInt(5)(1),   # Read x1 (after write)
-            UInt(32)(3): UInt(5)(2),   # Read x2 again
-            # Bypass test
-            UInt(32)(10): UInt(5)(6),  # Different from rs1
-            UInt(32)(11): UInt(5)(6),
-            UInt(32)(12): UInt(5)(0),
-            # Read various registers
-            UInt(32)(20): UInt(5)(11),
-            UInt(32)(21): UInt(5)(16),
-            UInt(32)(22): UInt(5)(30),
-            UInt(32)(30): UInt(5)(8),  # Different from rs1
-            UInt(32)(31): UInt(5)(7),  # Same as rs1 for testing
-            None: UInt(5)(0),
-        })
-
-        # Write enable pattern
-        rd_we = cnt[0].case({
-            # Initial writes to populate registers
-            UInt(32)(0): Bits(1)(1),   # Write to x1
-            UInt(32)(1): Bits(1)(1),   # Write to x2
-            UInt(32)(2): Bits(1)(0),   # No write
-            UInt(32)(3): Bits(1)(0),   # No write
-            # Bypass test writes
-            UInt(32)(10): Bits(1)(1),  # Write to x5 (bypass)
-            UInt(32)(11): Bits(1)(0),  # No write
-            UInt(32)(12): Bits(1)(1),  # Try write to x0 (should be ignored)
-            # Additional writes
-            UInt(32)(20): Bits(1)(1),  # Write to x10
-            UInt(32)(21): Bits(1)(1),  # Write to x15
-            UInt(32)(22): Bits(1)(1),  # Write to x31
-            UInt(32)(30): Bits(1)(1),  # Write to x7 (bypass test)
-            UInt(32)(31): Bits(1)(0),  # No write
-            None: Bits(1)(0),
-        })
-
-        # Write address
-        rd_addr = cnt[0].case({
-            UInt(32)(0): UInt(5)(1),   # x1
-            UInt(32)(1): UInt(5)(2),   # x2
-            UInt(32)(10): UInt(5)(5),  # x5 (bypass)
-            UInt(32)(12): UInt(5)(0),  # x0 (write should be ignored)
-            UInt(32)(20): UInt(5)(10), # x10
-            UInt(32)(21): UInt(5)(15), # x15
-            UInt(32)(22): UInt(5)(31), # x31
-            UInt(32)(30): UInt(5)(7),  # x7 (bypass)
-            None: UInt(5)(0),
-        })
-
-        # Write data
-        rd_wdata = cnt[0].case({
-            UInt(32)(0): UInt(32)(0xDEADBEEF),  # x1 = 0xDEADBEEF
-            UInt(32)(1): UInt(32)(0x12345678),  # x2 = 0x12345678
-            UInt(32)(10): UInt(32)(0xAAAAAAAA), # x5 = 0xAAAAAAAA (bypass)
-            UInt(32)(12): UInt(32)(0xFFFFFFFF), # x0 = 0xFFFFFFFF (should be ignored)
-            UInt(32)(20): UInt(32)(0x11111111), # x10 = 0x11111111
-            UInt(32)(21): UInt(32)(0x22222222), # x15 = 0x22222222
-            UInt(32)(22): UInt(32)(0x33333333), # x31 = 0x33333333
-            UInt(32)(30): UInt(32)(0xBBBBBBBB), # x7 = 0xBBBBBBBB (bypass)
-            None: UInt(32)(0),
-        })
-
-        forward_rs1.async_called(data=rs1_addr)
-        forward_rs2.async_called(data=rs2_addr)
-        forward_we.async_called(data=rd_we)
-        forward_rd_addr.async_called(data=rd_addr)
-        forward_rd_wdata.async_called(data=rd_wdata)
+        stimulus = StimulusDriver(self.timeline)
+        stimulus.bind(forward_rs1.async_called, data='rs1_addr')
+        stimulus.bind(forward_rs2.async_called, data='rs2_addr')
+        stimulus.bind(forward_we.async_called, data='rd_we')
+        stimulus.bind(forward_rd_addr.async_called, data='rd_addr')
+        stimulus.bind(forward_rd_wdata.async_called, data='rd_wdata')
+        stimulus.drive(cnt[0])
 
 
 class ForwardData(Module):
@@ -241,47 +239,51 @@ class RefRegFile:
 def check_raw(raw):
     """Check register file output against reference model"""
     ref = RefRegFile()
-    cnt = 0
+    checker = LogChecker(
+        PrefixExtractor('[test]', mode='contains'),
+        KeyValueParser(pair_sep='|', kv_sep=':'),
+    )
+    checker.expect_at_least(95)
 
-    for i in raw.split('\n'):
-        if '[test]' in i:
-            # Parse log line
-            line_toks = i.split('|')
-            rs1_addr = int(line_toks[0].split(':')[-1])
-            rs1_data = int(line_toks[1].split(':')[-1])
-            rs2_addr = int(line_toks[2].split(':')[-1])
-            rs2_data = int(line_toks[3].split(':')[-1])
-            rd_we = int(line_toks[4].split(':')[-1])
-            rd_addr = int(line_toks[5].split(':')[-1])
-            rd_wdata = int(line_toks[6].split(':')[-1])
+    state = {'cnt': 0}
 
-            # Get expected values from reference model using current cycle's inputs
-            ref_rs1_data, ref_rs2_data = ref.tick(rs1_addr, rs2_addr, rd_we, rd_addr, rd_wdata)
+    def _validate(record):
+        record.require('rs1_addr', 'rs2_addr', 'rd_we', 'rd_addr', 'rd_wdata', 'rs1_data', 'rs2_data')
 
-            # Debug output for first few cycles
-            if cnt < 10:
-                reg_val = ref.regs[rs1_addr] if rs1_addr < 32 else 0
-                print(f"Cycle {cnt}: rs1_addr={rs1_addr}, rs1_data={rs1_data:#x}, ref={ref_rs1_data:#x}, " +
-                      f"rd_we={rd_we}, rd_addr={rd_addr}, rd_wdata={rd_wdata:#x}")
-                print(f"         ref.rs1_addr_reg={ref.rs1_addr_reg}, ref.regs[{rs1_addr}]={reg_val:#x}")
+        rs1_addr = record.data['rs1_addr']
+        rs2_addr = record.data['rs2_addr']
+        rd_we = record.data['rd_we']
+        rd_addr = record.data['rd_addr']
+        rd_wdata = record.data['rd_wdata']
+        rs1_data = record.data['rs1_data']
+        rs2_data = record.data['rs2_data']
 
-            # Check rs1 data
-            assert rs1_data == ref_rs1_data, \
-                f'RS1 data incorrect at cycle {cnt}: addr={rs1_addr}, got {rs1_data:#x}, expected {ref_rs1_data:#x}'
+        ref_rs1_data, ref_rs2_data = ref.tick(rs1_addr, rs2_addr, rd_we, rd_addr, rd_wdata)
 
-            # Check rs2 data
-            assert rs2_data == ref_rs2_data, \
-                f'RS2 data incorrect at cycle {cnt}: addr={rs2_addr}, got {rs2_data:#x}, expected {ref_rs2_data:#x}'
+        if state['cnt'] < 10:
+            reg_val = ref.regs[rs1_addr] if rs1_addr < 32 else 0
+            print(f"Cycle {state['cnt']}: rs1_addr={rs1_addr}, rs1_data={rs1_data:#x}, ref={ref_rs1_data:#x}, "
+                  f"rd_we={rd_we}, rd_addr={rd_addr}, rd_wdata={rd_wdata:#x}")
+            print(f"         ref.rs1_addr_reg={ref.rs1_addr_reg}, ref.regs[{rs1_addr}]={reg_val:#x}")
 
-            cnt += 1
+        assert rs1_data == ref_rs1_data, \
+            f'RS1 data incorrect at cycle {state["cnt"]}: addr={rs1_addr}, got {rs1_data:#x}, expected {ref_rs1_data:#x}'
 
-    # We expect around sim_threshold - 2 cycles (accounting for reset and initialization)
-    assert cnt >= 95, f'cnt: {cnt} < 95 (too few test cycles)'
+        assert rs2_data == ref_rs2_data, \
+            f'RS2 data incorrect at cycle {state["cnt"]}: addr={rs2_addr}, got {rs2_data:#x}, expected {ref_rs2_data:#x}'
+
+        state['cnt'] += 1
+
+    checker.add_hook(_validate)
+    checker.collect(raw)
+
+    cnt = checker.summary['count']
     print(f"\n✓ Test passed! Ran {cnt} cycles successfully.")
 
 
 def build_system():
-    driver = Driver()
+    timeline = _build_regfile_stimulus()
+    driver = Driver(timeline)
     forward_rs1 = ForwardData(5)     # rs1_addr (5 bits)
     forward_rs2 = ForwardData(5)     # rs2_addr (5 bits)
     forward_we = ForwardBit()        # rd_we (1 bit)

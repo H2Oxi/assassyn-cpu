@@ -1,5 +1,5 @@
 from assassyn.frontend import *
-from assassyn.test import run_test
+from assassyn.test import run_test, LogChecker, RegexExtractor, LogRecord
 from impl.gen_cpu.dut.decoding import Decoder
 from impl.gen_cpu.submodules import InsDecoder
 from impl.gen_cpu.decoder_defs import (
@@ -147,66 +147,64 @@ def decode_instruction_ref(inst_code):
     return result
 
 
+def _decoder_parser(line: str, index: int) -> LogRecord:
+    """Convert `[decoder_test]` log line to LogRecord."""
+    if '[decoder_test]' not in line:
+        return LogRecord(index=index, line=line, data={})
+    decoder_part = line.split('[decoder_test]', 1)[1].strip()
+    tokens = decoder_part.split()
+    data = {}
+    for token in tokens:
+        if ':' not in token:
+            continue
+        key, value = token.split(':', 1)
+        key = key.strip()
+        value = value.strip()
+        if not value:
+            continue
+        try:
+            if key == 'inst':
+                data[key] = int(value, 16)
+            else:
+                data[key] = int(value, 0)
+        except ValueError:
+            continue
+    return LogRecord(index=index, line=line, data=data)
+
+
 def check_decoder(raw):
     """Check decoder outputs against reference decoder"""
-    lines = raw.splitlines()
-    test_count = 0
-    error_count = 0
+    checker = LogChecker(
+        RegexExtractor(r'\[decoder_test\]'),
+        _decoder_parser,
+    )
 
-    for line in lines:
-        if '[decoder_test]' not in line:
-            continue
+    stats = {'tested': 0, 'errors': 0}
 
-        # Parse the log line
-        # Expected format: Cycle @N.NN: [Module] [decoder_test] inst:0x12345678 rd:5 rs1:10 rs2:15 ...
-        # Extract the part after [decoder_test]
-        decoder_part = line.split('[decoder_test]')[1].strip()
-        tokens = decoder_part.split()
+    def _validate(record: LogRecord):
+        inst_code = record.data.get('inst')
+        if not inst_code:
+            return
+        if inst_code == 0:
+            return
 
-        inst_code = None
-        hw_outputs = {}
-
-        for token in tokens:
-            if ':' not in token:
-                continue
-            parts = token.split(':')
-            if len(parts) != 2:
-                continue
-            key, value = parts
-            if not value:  # Skip empty values
-                continue
-            if key == 'inst':
-                inst_code = int(value, 16)
-            else:
-                try:
-                    hw_outputs[key] = int(value)
-                except ValueError:
-                    continue
-
-        if inst_code is None or inst_code == 0:
-            continue
-
-        # Get reference outputs
+        stats['tested'] += 1
         ref_outputs = decode_instruction_ref(inst_code)
 
-        # Compare key fields
-        test_count += 1
-        errors = []
+        mismatches = []
+        for field in ('rd', 'rs1', 'rs2'):
+            if field in record.data and record.data[field] != ref_outputs[field]:
+                mismatches.append(f"{field} mismatch: hw={record.data[field]} ref={ref_outputs[field]}")
 
-        # Check register addresses
-        if 'rd' in hw_outputs and hw_outputs['rd'] != ref_outputs['rd']:
-            errors.append(f"rd mismatch: hw={hw_outputs['rd']} ref={ref_outputs['rd']}")
-        if 'rs1' in hw_outputs and hw_outputs['rs1'] != ref_outputs['rs1']:
-            errors.append(f"rs1 mismatch: hw={hw_outputs['rs1']} ref={ref_outputs['rs1']}")
-        if 'rs2' in hw_outputs and hw_outputs['rs2'] != ref_outputs['rs2']:
-            errors.append(f"rs2 mismatch: hw={hw_outputs['rs2']} ref={ref_outputs['rs2']}")
+        if mismatches:
+            stats['errors'] += 1
+            print(f"Instruction 0x{inst_code:08x}: {', '.join(mismatches)}")
 
-        if errors:
-            error_count += 1
-            print(f"Instruction 0x{inst_code:08x}: {', '.join(errors)}")
+    checker.add_hook(_validate)
+    checker.collect(raw)
 
-    print(f"Tested {test_count} instructions, {error_count} errors")
-    assert error_count == 0, f"Decoder test failed with {error_count} errors"
+    print(f"Tested {stats['tested']} instructions, {stats['errors']} errors")
+    assert stats['errors'] == 0, f"Decoder test failed with {stats['errors']} errors"
 
 
 def test_decoder():
@@ -284,7 +282,6 @@ def test_decoder():
 
 if __name__ == "__main__":
     test_decoder()
-
 
 
 

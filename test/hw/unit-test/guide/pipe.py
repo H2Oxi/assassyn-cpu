@@ -1,7 +1,14 @@
 import pytest
 
 from assassyn.frontend import *
-from assassyn.test import run_test
+from assassyn.test import (
+    run_test,
+    StimulusTimeline,
+    StimulusDriver,
+    LogChecker,
+    RegexExtractor,
+    RegexParser,
+)
 
 class Stage2(Module):
     def __init__(self):
@@ -29,60 +36,59 @@ class Stage1(Module):
 
 
 
+def _build_pipe_stimulus():
+    timeline = StimulusTimeline()
+    timeline.signal('data', UInt(32)).default(lambda cnt: cnt)
+    return timeline
+
+
 class Driver(Module):
 
-        def __init__(self):
-            super().__init__(ports={})
+    def __init__(self, timeline: StimulusTimeline):
+        super().__init__(ports={})
+        self.timeline = timeline
 
-        @module.combinational
-        def build(self, stage1: Stage1):
-            cnt = RegArray(UInt(32), 1)
-            cnt[0] = cnt[0] + UInt(32)(1)
+    @module.combinational
+    def build(self, stage1: Stage1):
+        cnt = self.timeline.build_counter()
+        cnt[0] = cnt[0] + self.timeline.counter_dtype(self.timeline.step)
 
-            stage1.async_called(data=cnt[0])
+        stimulus = StimulusDriver(self.timeline)
+        stimulus.bind(stage1.async_called, data='data')
+        stimulus.drive(cnt[0])
 
 
 
 def top():
+    timeline = _build_pipe_stimulus()
     stage2 = Stage2()
     stage2.build()
 
     stage1 = Stage1()
     stage1.build(stage2)
 
-    driver = Driver()
+    driver = Driver(timeline)
     driver.build(stage1)
 
 
 def check(raw):
-    # 解析日志，按时钟周期分组
-    cycles = {}
-    for line in raw.split('\n'):
-        if '[stage1]' in line or '[stage2]' in line:
-            # 提取时钟周期和数据值
-            parts = line.split()
-            # 假设格式包含时钟信息，需要找到cycle和data
-            if '[stage1]' in line:
-                # 从日志中提取data值
-                data_idx = parts.index('data:') if 'data:' in parts else -1
-                if data_idx != -1 and data_idx + 1 < len(parts):
-                    data_val = int(parts[data_idx + 1])
-                    # 提取时钟周期（假设在行首或特定位置）
-                    # 这里需要根据实际日志格式调整
-                    cycle = parts[0] if parts[0].isdigit() else 0
-                    if cycle not in cycles:
-                        cycles[cycle] = {}
-                    cycles[cycle]['stage1'] = data_val
-            elif '[stage2]' in line:
-                data_idx = parts.index('data:') if 'data:' in parts else -1
-                if data_idx != -1 and data_idx + 1 < len(parts):
-                    data_val = int(parts[data_idx + 1])
-                    cycle = parts[0] if parts[0].isdigit() else 0
-                    if cycle not in cycles:
-                        cycles[cycle] = {}
-                    cycles[cycle]['stage2'] = data_val
+    pattern = r'Cycle @(?P<cycle>\d+\.\d+):.*\[(?P<tag>stage1|stage2)\]\s+data:\s*(?P<value>-?\d+)'
+    checker = LogChecker(
+        RegexExtractor(pattern),
+        RegexParser(pattern),
+    )
 
-    # 检查同一时钟周期下stage1和stage2的数据是否相差1
+    cycles = {}
+
+    def _collect(record):
+        cycle = float(record.data['cycle'])
+        tag = record.data['tag']
+        value = int(record.data['value'])
+        cycles.setdefault(cycle, {})[tag] = value
+
+    checker.add_hook(_collect)
+    checker.collect(raw)
+
     cnt = 0
     for cycle, stages in cycles.items():
         if 'stage1' in stages and 'stage2' in stages:

@@ -1,5 +1,5 @@
 from assassyn.frontend import *
-from assassyn.test import run_test
+from assassyn.test import run_test, StimulusTimeline
 
 
 class FSM_m(Module):
@@ -45,19 +45,26 @@ class FSM_m(Module):
         log("state: {} | a: {} |  temp: {}  ", user_state[0] , a , temp[0])
 
 
+def _build_fsm_stimulus():
+    timeline = StimulusTimeline(Int(32))
+    timeline.signal('a', Int(32)).default(lambda cnt: cnt)
+    return timeline
+
+
 class Driver(Module):
 
-    def __init__(self):
+    def __init__(self, timeline: StimulusTimeline):
         super().__init__(ports={})
+        self.timeline = timeline
 
     @module.combinational
     def build(self, adder: FSM_m):
-
-        cnt = RegArray(Int(32), 1)
-        cnt[0] = cnt[0] + Int(32)(1)
+        cnt = self.timeline.build_counter()
+        cnt[0] = cnt[0] + self.timeline.counter_dtype(self.timeline.step)
+        values = self.timeline.values(cnt[0])
         cond = cnt[0] < Int(32)(100)
         with Condition(cond):
-            adder.async_called(a = cnt[0])
+            adder.async_called(a=values['a'])
 
 
 
@@ -68,7 +75,8 @@ def test_fsm():
         adder1 = FSM_m()
         adder1.build()
 
-        driver = Driver()
+        timeline = _build_fsm_stimulus()
+        driver = Driver(timeline)
         driver.build(adder1)
 
     def checker(raw):

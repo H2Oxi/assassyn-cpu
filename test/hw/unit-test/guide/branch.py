@@ -1,7 +1,13 @@
 import pytest
 
 from assassyn.frontend import *
-from assassyn.test import run_test
+from assassyn.test import (
+    run_test,
+    StimulusTimeline,
+    LogChecker,
+    RegexExtractor,
+    RegexParser,
+)
 
 class Merging(Downstream):
     def __init__(self):
@@ -46,31 +52,40 @@ class Branch1(Module):
         return data
 
 
+def _build_branch_stimulus():
+    timeline = StimulusTimeline()
+    timeline.signal('data', UInt(32)).default(lambda cnt: cnt)
+    timeline.signal('valid1', Bits(1)).default(lambda cnt: (cnt[0:1] == UInt(2)(2)))
+    timeline.signal('valid2', Bits(1)).default(lambda cnt: (cnt[0:1] == UInt(2)(3)))
+    return timeline
+
+
 class Driver(Module):
-    def __init__(self):
+    def __init__(self, timeline: StimulusTimeline):
         super().__init__(ports={})
+        self.timeline = timeline
 
     @module.combinational
     def build(self, branch1: Branch1, branch2: Branch2, valid1: Array, valid2: Array):
-        cnt = RegArray(UInt(32), 1)
-        cnt[0] = cnt[0] + UInt(32)(1)
+        cnt = self.timeline.build_counter()
+        cnt[0] = cnt[0] + self.timeline.counter_dtype(self.timeline.step)
 
-        valid1_value = (cnt[0][0:1] == UInt(2)(2))
-        valid2_value = (cnt[0][0:1] == UInt(2)(3))
+        values = self.timeline.values(cnt[0])
 
-        with Condition(valid1_value):
-            branch1.async_called(data=cnt[0])
+        with Condition(values['valid1']):
+            branch1.async_called(data=values['data'])
 
-        with Condition(valid2_value):
-            branch2.async_called(data=cnt[0])
-        
-        valid1[0] = valid1_value
-        valid2[0] = valid2_value
+        with Condition(values['valid2']):
+            branch2.async_called(data=values['data'])
+
+        valid1[0] = values['valid1']
+        valid2[0] = values['valid2']
 
         
 
 
 def top():
+    timeline = _build_branch_stimulus()
     
     branch1 = Branch1()
     data_branch1 = branch1.build()
@@ -81,7 +96,7 @@ def top():
     valid1 = RegArray(Bits(1),1)
     valid2 = RegArray(Bits(1),1)
 
-    driver = Driver()
+    driver = Driver(timeline)
     driver.build(branch1, branch2, valid1, valid2)
 
     merging = Merging()
@@ -90,7 +105,23 @@ def top():
 
 
 def check(raw):
-    pass
+    pattern = r'Cycle @(?P<cycle>\d+\.\d+):.*\[merge\]\s+(?P<label>data_branch[12]):\s*(?P<value>-?\d+)'
+    checker = LogChecker(
+        RegexExtractor(pattern),
+        RegexParser(pattern),
+    )
+
+    counts = {'data_branch1': 0, 'data_branch2': 0}
+
+    def _collect(record):
+        label = record.data['label']
+        counts[label] += 1
+
+    checker.add_hook(_collect)
+    checker.collect(raw)
+
+    assert counts['data_branch1'] > 0, "Expected merge log for branch1"
+    assert counts['data_branch2'] > 0, "Expected merge log for branch2"
 
 def sim_branch():
     run_test('branch', top, check)

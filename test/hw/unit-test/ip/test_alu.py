@@ -1,103 +1,104 @@
 from assassyn.frontend import *
-from assassyn.test import run_test
+from assassyn.test import (
+    run_test,
+    StimulusTimeline,
+    StimulusDriver,
+    LogChecker,
+    PrefixExtractor,
+    KeyValueParser,
+    ReferenceHook,
+)
 from impl.ip.ips import ALU as ExternalALU
 
 from assassyn.backend import elaborate
 from assassyn import utils
 
 
+def _build_alu_stimulus():
+    timeline = StimulusTimeline()
+
+    timeline.signal('alu_in1', UInt(32)).case_map({
+        0: 0,
+        1: 0xFFFFFFFF,
+        2: 0x7FFFFFFF,
+        3: 0x80000000,
+        4: 100,
+        5: 50,
+        10: 0x12345678,
+        11: 0x80000001,
+        12: 0xFFFFFFFF,
+        20: 0xAAAAAAAA,
+        21: 0xF0F0F0F0,
+        30: 10,
+        31: 0xFFFFFFFF,
+        32: 0x80000000,
+    }, default=lambda cnt: cnt)
+
+    timeline.signal('alu_in2', UInt(32)).case_map({
+        0: 0,
+        1: 1,
+        2: 1,
+        3: 1,
+        4: 50,
+        5: 100,
+        10: 4,
+        11: 8,
+        12: 16,
+        20: 0x55555555,
+        21: 0x0F0F0F0F,
+        30: 20,
+        31: 0,
+        32: 0x7FFFFFFF,
+    }, default=lambda cnt: cnt)
+
+    timeline.signal('alu_op', UInt(4)).case_map({
+        0: 0,
+        1: 0,
+        2: 0,
+        3: 0,
+        4: 1,
+        5: 1,
+        10: 5,
+        11: 6,
+        12: 7,
+        20: 2,
+        21: 3,
+        30: 8,
+        31: 8,
+        32: 8,
+    }, default=4)
+
+    timeline.signal('cmp_op', UInt(3)).case_map({
+        0: 0,
+        1: 0,
+        2: 1,
+        3: 2,
+        4: 3,
+        30: 4,
+        31: 4,
+        32: 5,
+    }, default=6)
+
+    return timeline
+
+
 class Driver(Module):
 
-    def __init__(self):
+    def __init__(self, timeline: StimulusTimeline):
         super().__init__(ports={})
+        self.timeline = timeline
 
     @module.combinational
     def build(self, forward1: Module, forward2: Module, forward3: Module, forward4: Module):
-        cnt = RegArray(UInt(32), 1)
-        cnt[0] = cnt[0] + UInt(32)(1)
+        cnt = self.timeline.build_counter()
+        cnt[0] = cnt[0] + self.timeline.counter_dtype(self.timeline.step)
 
-        # Test cases covering edge cases and all operations
-        alu_in1 = cnt[0].case({
-            # Edge cases for basic arithmetic
-            UInt(32)(0): UInt(32)(0),
-            UInt(32)(1): UInt(32)(0xFFFFFFFF),  # -1 in two's complement
-            UInt(32)(2): UInt(32)(0x7FFFFFFF),  # max positive
-            UInt(32)(3): UInt(32)(0x80000000),  # min negative
-            UInt(32)(4): UInt(32)(100),
-            UInt(32)(5): UInt(32)(50),
-            # Shift operations
-            UInt(32)(10): UInt(32)(0x12345678),
-            UInt(32)(11): UInt(32)(0x80000001),
-            UInt(32)(12): UInt(32)(0xFFFFFFFF),
-            # Logical operations
-            UInt(32)(20): UInt(32)(0xAAAAAAAA),
-            UInt(32)(21): UInt(32)(0xF0F0F0F0),
-            # Comparison edge cases
-            UInt(32)(30): UInt(32)(10),
-            UInt(32)(31): UInt(32)(0xFFFFFFFF),
-            UInt(32)(32): UInt(32)(0x80000000),
-            None: cnt[0],
-        })
-
-        alu_in2 = cnt[0].case({
-            UInt(32)(0): UInt(32)(0),
-            UInt(32)(1): UInt(32)(1),
-            UInt(32)(2): UInt(32)(1),
-            UInt(32)(3): UInt(32)(1),
-            UInt(32)(4): UInt(32)(50),
-            UInt(32)(5): UInt(32)(100),
-            # Shift amounts
-            UInt(32)(10): UInt(32)(4),
-            UInt(32)(11): UInt(32)(8),
-            UInt(32)(12): UInt(32)(16),
-            # Logical operations
-            UInt(32)(20): UInt(32)(0x55555555),
-            UInt(32)(21): UInt(32)(0x0F0F0F0F),
-            # Comparison
-            UInt(32)(30): UInt(32)(20),
-            UInt(32)(31): UInt(32)(0),
-            UInt(32)(32): UInt(32)(0x7FFFFFFF),
-            None: cnt[0],
-        })
-
-        # ALU operation: cycle through all operations
-        # 0=ADD, 1=SUB, 2=AND, 3=OR, 4=XOR, 5=SLL, 6=SRL, 7=SRA, 8=SLTU
-        alu_op = cnt[0].case({
-            UInt(32)(0): UInt(4)(0),  # ADD
-            UInt(32)(1): UInt(4)(0),  # ADD
-            UInt(32)(2): UInt(4)(0),  # ADD
-            UInt(32)(3): UInt(4)(0),  # ADD
-            UInt(32)(4): UInt(4)(1),  # SUB
-            UInt(32)(5): UInt(4)(1),  # SUB
-            UInt(32)(10): UInt(4)(5), # SLL
-            UInt(32)(11): UInt(4)(6), # SRL
-            UInt(32)(12): UInt(4)(7), # SRA
-            UInt(32)(20): UInt(4)(2), # AND
-            UInt(32)(21): UInt(4)(3), # OR
-            UInt(32)(30): UInt(4)(8), # SLTU
-            UInt(32)(31): UInt(4)(8), # SLTU
-            UInt(32)(32): UInt(4)(8), # SLTU
-            None: UInt(4)(4),  # XOR for other cases
-        })
-
-        # Comparator operation: cycle through all comparisons
-        # 0=EQ, 1=NE, 2=LT, 3=GE, 4=LTU, 5=GEU, 6=NONE
-        cmp_op = cnt[0].case({
-            UInt(32)(0): UInt(3)(0),  # EQ
-            UInt(32)(1): UInt(3)(0),  # EQ
-            UInt(32)(2): UInt(3)(1),  # NE
-            UInt(32)(3): UInt(3)(2),  # LT (signed)
-            UInt(32)(4): UInt(3)(3),  # GE (signed)
-            UInt(32)(30): UInt(3)(4), # LTU (unsigned)
-            UInt(32)(31): UInt(3)(4), # LTU (unsigned)
-            UInt(32)(32): UInt(3)(5), # GEU (unsigned)
-            None: UInt(3)(6),  # NONE for other cases
-        })
-
-        forward1.async_called(data=alu_in1)
-        forward2.async_called(data=alu_in2)
-        forward3.async_called(data=alu_op)
-        forward4.async_called(data=cmp_op)
+        stimulus = StimulusDriver(self.timeline)
+        stimulus.bind(forward1.async_called, data='alu_in1')
+        stimulus.bind(forward2.async_called, data='alu_in2')
+        stimulus.bind(forward3.async_called, data='alu_op')
+        stimulus.bind(forward4.async_called, data='cmp_op')
+        stimulus.drive(cnt[0])
 
 
 class ForwardData(Module):
@@ -190,37 +191,34 @@ def ref_cmp(alu_in1, alu_in2, cmp_op):
         return 0
 
 
+def ref_alu_combined(alu_in1, alu_in2, alu_op, cmp_op):
+    return {
+        'alu_out': ref_alu(alu_in1, alu_in2, alu_op),
+        'cmp_out': ref_cmp(alu_in1, alu_in2, cmp_op),
+    }
+
+
 def check_raw(raw):
     """Check ALU output against reference model"""
-    cnt = 0
-    for i in raw.split('\n'):
-        if '[test]' in i:
-            # Parse log line: alu_in1:X|alu_in2:Y|alu_op:Z|cmp_op:W|alu_out:A|cmp_out:B
-            line_toks = i.split('|')
-            alu_in1 = int(line_toks[0].split(':')[-1])
-            alu_in2 = int(line_toks[1].split(':')[-1])
-            alu_op = int(line_toks[2].split(':')[-1])
-            cmp_op = int(line_toks[3].split(':')[-1])
-            alu_out = int(line_toks[4].split(':')[-1])
-            cmp_out = int(line_toks[5].split(':')[-1])
-
-            # Check ALU output
-            ref_alu_out = ref_alu(alu_in1, alu_in2, alu_op)
-            assert alu_out == ref_alu_out, \
-                f'ALU output incorrect: op={alu_op}, {alu_in1} op {alu_in2} = {alu_out}, expected {ref_alu_out}'
-
-            # Check comparator output
-            ref_cmp_out = ref_cmp(alu_in1, alu_in2, cmp_op)
-            assert cmp_out == ref_cmp_out, \
-                f'CMP output incorrect: op={cmp_op}, {alu_in1} cmp {alu_in2} = {cmp_out}, expected {ref_cmp_out}'
-
-            cnt += 1
-
-    assert cnt == 99, f'cnt: {cnt} != 99'
+    checker = LogChecker(
+        PrefixExtractor('[test]', mode='contains'),
+        KeyValueParser(pair_sep='|', kv_sep=':'),
+    )
+    checker.expect_count(99)
+    checker.add_hook(
+        ReferenceHook(
+            ref_alu_combined,
+            inputs=['alu_in1', 'alu_in2', 'alu_op', 'cmp_op'],
+            outputs=['alu_out', 'cmp_out'],
+            name='alu_ref',
+        )
+    )
+    checker.collect(raw)
 
 
 def build_system():
-    driver = Driver()
+    timeline = _build_alu_stimulus()
+    driver = Driver(timeline)
     forward1 = ForwardData(32)  # alu_in1
     forward2 = ForwardData(32)  # alu_in2
     forward3 = ForwardData(4)   # alu_op
