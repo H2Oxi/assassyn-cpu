@@ -22,27 +22,23 @@ class Fetchor(Module):
         self.name = 'F'
 
     @module.combinational
-    def build(self, decoder: Module, init_file:str, depth_log:int=9):
+    def build(self, decoder: Module, pc: RegArray, jump_update_done: RegArray, init_file:str, depth_log:int=9):
         """Fetch instructions from icache and pass to decoder
 
         Args:
             decoder: Decoder module to receive fetched instructions
+            pc: Program Counter RegArray from jump_predictor_wrapper
+            jump_update_done: Signal from jump_predictor indicating jump completion
             init_file: Path to instruction memory initialization file
             depth_log: Log2 of instruction cache depth (default 9 = 512 entries)
         """
-        # PC register for tracking current instruction address
-        pc_reg = RegArray(UInt(32), 1)
-
-        # Increment PC by 4 (next instruction) each cycle
-        (pc_reg & self)[0] <= pc_reg[0] + UInt(32)(4)
-
         # Instantiate instruction cache
         icache = SRAM(width=32, depth=1<<depth_log, init_file=init_file)
         icache.name = 'icache'
 
         # Read from icache: we=0 (no write), re=1 (read enable)
         # Address is PC >> 2 (word-aligned, so divide by 4)
-        fetch_addr = pc_reg[0][2:2+depth_log-1].bitcast(UInt(depth_log))
+        fetch_addr = pc[0][2:2+depth_log-1].bitcast(UInt(depth_log))
         icache.build(
             we=Bits(1)(0),     # Write enable = 0 (read-only)
             re=Bits(1)(1),     # Read enable = 1
@@ -50,17 +46,21 @@ class Fetchor(Module):
             wdata=Bits(32)(0)  # Write data (unused)
         )
 
-        # Pass fetched instruction and PC to decoder
-        decoder.async_called(fetch_addr=pc_reg[0])
+        # Log fetch address for debugging
+        log('[fetchor] fetch_addr: 0x{:08x}', pc[0])
+
+        # Pass fetched instruction, PC, and jump_update_done to decoder
+        decoder.async_called(fetch_addr=pc[0], jump_update_done=jump_update_done[0])
 
         # Return icache output for decoder to use
         return icache.dout
 
 class Decoder(Module):
-    
+
     def __init__(self):
         super().__init__(ports={
             'fetch_addr': Port(Bits(32)),
+            'jump_update_done': Port(Bits(1)),  # Signal from jump_predictor_wrapper
         })
         self.name = 'D'
 
@@ -73,17 +73,44 @@ class Decoder(Module):
             rdata: Instruction data from icache (RegArray from Fetchor)
 
         Returns:
-            Tuple of (rs1_addr, rs2_addr, rd_write_en, rd_addr, imm) for regfile_wrapper
+            Tuple of (rs1_addr, rs2_addr, imm) for regfile_wrapper
         """
-        # Pop fetch address from port (sent by Fetchor via async_called)
-        fetch_addr = self.pop_all_ports(False)  # pop under fetchor's FSM control
+        # Pop ports
+        # fetch_addr comes from Fetchor
+        # jump_update_done comes from jump_predictor_wrapper when PC update is complete
+        fetch_addr, jump_update_done = self.pop_all_ports(False)
         instruction_code = rdata[0].bitcast(Bits(32))
+
+        # Log instruction data for debugging
+        log('[decoder] fetch_addr: 0x{:08x} ins: 0x{:08x}', fetch_addr, instruction_code)
 
         # Instantiate the instruction decoder and use outputs directly
         decoder = InsDecoder(instr_in=instruction_code)
 
-        # Check if instruction is valid
-        valid = decoder.decoded_valid & (~decoder.illegal)
+        # Check if instruction is valid (decoded correctly and not illegal)
+        base_valid = decoder.decoded_valid & (~decoder.illegal)
+
+        # Detect if this is a jump instruction based on addr_purpose
+        from impl.gen_cpu.decoder_defs import AddrPurpose
+        is_jump = (decoder.addr_purpose == UInt(3)(AddrPurpose.BR_TARGET.value)) | \
+                  (decoder.addr_purpose == UInt(3)(AddrPurpose.IND_TARGET.value))
+
+        # Valid control logic:
+        # - We use a register to track if we're waiting for a jump to complete
+        # - When a jump instruction is detected, we set waiting_for_jump=1
+        # - We keep valid disabled until jump_update_done signal arrives
+        # - After jump_update_done, we resume normal operation
+        waiting_for_jump = RegArray(Bits(1), 1)
+
+        # Update waiting_for_jump register
+        # Set to 1 when we detect a jump instruction
+        # Clear to 0 when jump_update_done is received
+        new_waiting = (base_valid & is_jump).bitcast(Bits(1)) | \
+                      (waiting_for_jump[0] & ~jump_update_done)
+        (waiting_for_jump & self)[0] <= new_waiting
+
+        # Final valid signal: only valid if not waiting for jump
+        valid = base_valid & ~waiting_for_jump[0]
 
         # Pass all necessary control signals to executor
         with Condition(valid):
@@ -95,12 +122,13 @@ class Decoder(Module):
                 alu_in2_sel=decoder.alu_in2_sel,
                 alu_op=decoder.alu_op,
                 cmp_op=decoder.cmp_op,
+                cmp_out_used=decoder.cmp_out_used,  # For jump_predictor
                 # Adder control signals
                 adder_use=decoder.adder_use,
                 add_in1_sel=decoder.add_in1_sel,
                 add_in2_sel=decoder.add_in2_sel,
                 add_postproc=decoder.add_postproc,
-                addr_purpose=decoder.addr_purpose,
+                addr_purpose=decoder.addr_purpose,  # For jump_predictor
                 # Memory control signals
                 mem_read=decoder.mem_read,
                 mem_write=decoder.mem_write,
@@ -141,12 +169,13 @@ class Executor(Module):
             'alu_in2_sel': Port(UInt(2)),
             'alu_op': Port(UInt(4)),
             'cmp_op': Port(UInt(3)),
+            'cmp_out_used': Port(Bits(1)),  # For jump control
             # Adder control signals
             'adder_use': Port(UInt(3)),
             'add_in1_sel': Port(UInt(2)),
             'add_in2_sel': Port(Bits(1)),
             'add_postproc': Port(Bits(1)),
-            'addr_purpose': Port(UInt(3)),
+            'addr_purpose': Port(UInt(3)),  # For jump control
             # Memory control signals
             'mem_read': Port(Bits(1)),
             'mem_write': Port(Bits(1)),
@@ -174,7 +203,7 @@ class Executor(Module):
             depth_log: Log2 of data cache depth (default 9 = 512 entries)
         """
         # Pop all control signals from ports
-        (fetch_addr, alu_en, alu_in1_sel, alu_in2_sel, alu_op, cmp_op,
+        (fetch_addr, alu_en, alu_in1_sel, alu_in2_sel, alu_op, cmp_op, cmp_out_used,
          adder_use, add_in1_sel, add_in2_sel, add_postproc, addr_purpose,
          mem_read, mem_write, mem_wdata_sel, mem_wstrb,
          wb_data_sel, wb_en, rd_addr, imm) = self.pop_all_ports(False)
@@ -260,8 +289,10 @@ class Executor(Module):
             rd_addr=rd_addr,
         )
 
-        # Return dcache for external connection to memory_accessor
-        return dcache
+        # Return dcache and jump control signals for external connections
+        # dcache: for memory_accessor
+        # Jump control signals: for jump_predictor_wrapper
+        return dcache, addr_purpose, adder_result, alu.cmp_out, cmp_out_used
         
 
 
@@ -358,6 +389,11 @@ class WriteBack(Module):
         """
         # Pop writeback data from ports (sent by MemoryAccessor)
         rd, rd_data, wb_en = self.pop_all_ports(False)
+
+        # Log writeback data for verification
+        # Format: [writeback] x<rd>: 0x<rd_data> (matches 0to100.sh requirements)
+        with Condition(wb_en == Bits(1)(1)):
+            log('[writeback] x{}: 0x{:08x}', rd.bitcast(UInt(5)), rd_data)
 
         # Return for external connection to regfile_wrapper
         return rd, rd_data, wb_en

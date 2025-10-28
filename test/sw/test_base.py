@@ -8,15 +8,43 @@ import os
 import shutil
 import subprocess
 
-from assassyn.frontend import SysBuilder
+from assassyn.frontend import *
 from assassyn.backend import config, elaborate
 from assassyn import utils
 
-from impl.gen_cpu.main import top
+from impl.gen_cpu.pipestage import Fetchor, Decoder, Executor, MemoryAccessor, WriteBack
+from impl.gen_cpu.downstreams import regfile_wrapper, jump_predictor_wrapper
 
 # Define workspace path relative to current file
 current_path = os.path.dirname(os.path.abspath(__file__))
 workspace = f'{current_path}/.workspace/'
+
+
+class Driver(Module):
+    """Driver module to control CPU startup timing"""
+
+    def __init__(self):
+        super().__init__(ports={})
+
+    @module.combinational
+    def build(self, fetchor):
+        """Control when to start the CPU
+
+        Args:
+            fetchor: Fetchor module to start async calling
+
+        The driver waits until counter > 10 before starting the CPU,
+        giving time for initialization.
+        """
+        # Counter for controlling startup
+        cnt = RegArray(UInt(32), 1)
+
+        # Increment counter
+        (cnt & self)[0] <= cnt[0] + UInt(32)(1)
+
+        # Only start calling fetchor after cnt[0] > 10
+        with Condition(cnt[0] > UInt(32)(10)):
+            fetchor.async_called()
 
 
 def cp_if_exists(src, dst, placeholder=False):
@@ -70,11 +98,64 @@ def build_cpu(depth_log=9):
     dcache_file = os.path.abspath(f'{workspace}/workload.data')
 
     with sys:
-        # Call top() to build the CPU pipeline
-        top(
-            icache_init_file=icache_file,
-            dcache_init_file=dcache_file,
+        # ========== Instantiate all pipeline stages ==========
+        write_back = WriteBack()
+        memory_accessor = MemoryAccessor()
+        executor = Executor()
+        decoder = Decoder()
+        fetchor = Fetchor()
+        driver = Driver()
+        jump_predictor = jump_predictor_wrapper()
+
+        # ========== Define PC register as the single source of truth ==========
+        # PC assignment should only happen in ONE place
+        pc = RegArray(UInt(32), 1)
+        jump_update_done = RegArray(Bits(1), 1,initializer=[0])
+
+        # ========== Build stages in correct order ==========
+
+        # Stage 5: WriteBack (no dependencies)
+        rd, rd_data, wb_en = write_back.build()
+
+        # Build the Driver to control fetchor startup
+        driver.build(fetchor)
+
+        # Build Fetchor with PC as input
+        icache_dout = fetchor.build(decoder=decoder, pc=pc, init_file=icache_file, depth_log=depth_log, jump_update_done=jump_update_done)
+
+        # Build Decoder with instruction data
+        rs1_addr, rs2_addr, imm = decoder.build(executor=executor, rdata=icache_dout)
+
+        # Build regfile_wrapper
+        rs1_data, rs2_data = regfile_wrapper().build(
+            rs1_addr=rs1_addr,
+            rs2_addr=rs2_addr,
+            rd_write_en=wb_en,
+            rd_addr=rd,
+            rd_wdata=rd_data
+        )
+
+        # Build Executor - returns jump control values
+        dcache, addr_purpose, adder_result, cmp_out, cmp_out_used = executor.build(
+            memory_accessor=memory_accessor,
+            RS1_data=rs1_data,
+            RS2_data=rs2_data,
+            init_file=dcache_file,
             depth_log=depth_log
+        )
+
+        # Build MemoryAccessor
+        wb_data = memory_accessor.build(write_back=write_back, mem_rdata=dcache.dout)
+
+        # Build jump_predictor - pass PC to it so it can update PC
+        # It returns jump_update_done signal for Decoder
+        jump_predictor.build(
+            pc=pc,
+            addr_purpose=addr_purpose,
+            adder_result=adder_result,
+            cmp_out=cmp_out,
+            cmp_out_used=cmp_out_used,
+            jump_processed=jump_update_done
         )
 
     print(sys)
@@ -143,7 +224,8 @@ def run_cpu(sys, simulator_binary, verilog_path):
 
 if __name__ == '__main__':
     # Define workload path
-    wl_path = f'{utils.repo_path()}/resources/riscv/benchmarks'
+    # Note: utils.repo_path() returns the assassyn subdir, we need parent dir
+    wl_path = f'{os.path.dirname(utils.repo_path())}/resources/riscv/benchmarks'
 
     # Initialize workspace with 0to100 workload
     print("Initializing workspace with 0to100.exe...")

@@ -4,6 +4,8 @@
 build/
 bin/
 workspace/
+*.log
+**/.workspace/
 
 # IDE
 .vscode/
