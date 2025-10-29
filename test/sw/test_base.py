@@ -109,8 +109,8 @@ def build_cpu(depth_log=9):
 
         # ========== Define PC register as the single source of truth ==========
         # PC assignment should only happen in ONE place
-        pc = RegArray(UInt(32), 1)
-        jump_update_done = RegArray(Bits(1), 1,initializer=[0])
+        pc = RegArray(UInt(32), 1, initializer=[0])
+        jump_update_done = RegArray(Bits(1), 1, initializer=[0])
 
         # ========== Build stages in correct order ==========
 

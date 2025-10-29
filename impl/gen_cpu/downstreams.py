@@ -27,14 +27,21 @@ class regfile_wrapper(Downstream):
 
 
 class jump_predictor_wrapper(Downstream):
-    """Downstream module for managing PC updates and jump control
+    """Downstream module that manages program counter updates.
 
-    This module:
-    1. Receives jump information from Executor (addr_purpose, adder_result, cmp_out)
-    2. Determines if a jump should be taken
-    3. Manages PC update logic (PC+4 vs jump target)
-    4. Provides next PC value to Fetchor
-    5. Provides address update completion signal to Decoder
+    Inputs:
+        pc (RegArray[UInt(32)]): shared PC register updated in this module only.
+        addr_purpose (UInt(3)): executor output indicating the purpose of adder_result.
+        adder_result (UInt(32)): jump target calculated by the executor.
+        cmp_out (Bits(1)): branch comparator output.
+        cmp_out_used (Bits(1)): flag showing whether cmp_out is meaningful (branches).
+        jump_processed (RegArray[Bits(1)]): handshake flag for decoder valid control.
+
+    Output:
+        jump_processed[0]: combinational view of the handshake flag for downstream modules.
+
+    Internal state is modelled with an FSM to ensure every jump is handled exactly once while
+    keeping sequential PC updates explicit.
     """
 
     def __init__(self):
@@ -42,63 +49,70 @@ class jump_predictor_wrapper(Downstream):
 
     @downstream.combinational
     def build(self, pc, addr_purpose, adder_result, cmp_out, cmp_out_used, jump_processed):
-        """Build jump predictor logic
-
-        This module updates the PC register based on jump/branch instructions.
-
-        Args:
-            pc: PC RegArray (created externally, passed in as input)
-            addr_purpose: Address purpose from Executor (UInt(3), indicates jump type)
-            adder_result: Calculated jump target address from Executor (UInt(32))
-            cmp_out: Comparator output from Executor (Bits(1), for conditional branches)
-            cmp_out_used: Flag from Executor (Bits(1), 1 for branch, 0 for JAL/JALR)
-
-        Returns:
-            jump_update_done: Signal indicating when jump processing is complete (Bits(1))
-        """
-        # Add optional protection for inputs that may be X in early cycles
+        """Select between sequential and jump target PC values and drive the handshake."""
+        # Optional protects propagating X during reset
         addr_purpose = addr_purpose.optional(UInt(3)(AddrPurpose.NONE.value))
         jump_target = adder_result.optional(UInt(32)(0))
         cmp_out = cmp_out.optional(Bits(1)(0))
         cmp_out_used = cmp_out_used.optional(Bits(1)(0))
 
-        # Detect if this is a jump instruction
-        # Note: ADDR_BR is used for both Branch and JAL instructions
-        # ADDR_IND is used for JALR (indirect jump)
-        is_br_or_jal = (addr_purpose == UInt(3)(AddrPurpose.BR_TARGET.value))
-        is_jalr = (addr_purpose == UInt(3)(AddrPurpose.IND_TARGET.value))
-        is_jump_instr = is_br_or_jal | is_jalr
+        # Determine jump categories
+        is_branch_or_jal = (addr_purpose == UInt(3)(AddrPurpose.BR_TARGET.value))
+        is_indirect_jump = (addr_purpose == UInt(3)(AddrPurpose.IND_TARGET.value))
+        is_j_target = (addr_purpose == UInt(3)(AddrPurpose.J_TARGET.value))
+        is_jump_instr = (is_branch_or_jal | is_indirect_jump | is_j_target).bitcast(Bits(1))
 
-        # Determine if jump should be taken
-        # - For branches (cmp_out_used=1): take jump only if cmp_out is true (conditional)
-        # - For JAL (cmp_out_used=0): always take jump (unconditional)
-        # - For JALR (cmp_out_used=0): always take jump (unconditional)
-
-        # Conditional branch: cmp_out_used=1 and cmp_out=1
-        conditional_branch_taken = (cmp_out_used == Bits(1)(1)) & (cmp_out == Bits(1)(1))
-
-        # Unconditional jump: JAL or JALR (cmp_out_used=0)
-        unconditional_jump = (cmp_out_used == Bits(1)(0)) & is_jump_instr
-
-        take_jump = conditional_branch_taken | unconditional_jump
-
-        # Calculate next PC
-        # If take_jump: use jump_target
-        # Otherwise: use PC + 4
+        # Default sequential next PC
         pc_plus_4 = pc[0] + UInt(32)(4)
-        next_pc = take_jump.select(jump_target, pc_plus_4)
 
-        # Update PC register (this is the ONLY place where PC is assigned)
-        (pc & self)[0] <= next_pc
+        # FSM state: idle -> cooldown once a jump is observed, back to idle after pipeline flush
+        fsm_state = RegArray(Bits(1), 1, initializer=[0])
 
-        # Generate signal to decoder when address update is complete
-        # We track whether a jump was processed in the previous cycle
-        (jump_processed & self)[0] <= is_jump_instr.bitcast(Bits(1))
+        cond_jump = (is_jump_instr == Bits(1)(1))
+        cond_no_jump = (is_jump_instr == Bits(1)(0))
 
-        # Log jump events for debugging
-        with Condition(take_jump):
-            log('[jump_predictor] PC: 0x{:08x} -> 0x{:08x} (addr_purpose:{} cmp_used:{} cmp:{})',
-                pc[0], jump_target, addr_purpose, cmp_out_used, cmp_out)
+        transfer_table = {
+            "idle": {
+                cond_jump: "cooldown",
+                cond_no_jump: "idle",
+            },
+            "cooldown": {
+                cond_no_jump: "idle",
+                cond_jump: "cooldown",
+            },
+        }
 
-        # Return the jump_update_done signal for Decoder to use
+        def idle_body():
+            jump_candidate = (is_jump_instr == Bits(1)(1))
+            branch_enabled = (cmp_out_used == Bits(1)(1))
+            branch_condition = branch_enabled.select(cmp_out, Bits(1)(1))
+            jump_taken = jump_candidate & branch_condition
+
+            next_pc_value = jump_taken.select(jump_target, pc_plus_4)
+            jump_processed_value = jump_candidate
+
+            (pc & self)[0] <= next_pc_value
+            (jump_processed & self)[0] <= jump_processed_value
+
+            with Condition(jump_candidate == Bits(1)(1)):
+                log('[jump_predictor] inspect addr_purpose:{} cmp_used:{} cmp:{} taken:{} target:0x{:08x}',
+                    addr_purpose, cmp_out_used, cmp_out, jump_taken, jump_target)
+
+            with Condition(jump_taken == Bits(1)(1)):
+                log('[jump_predictor] PC: 0x{:08x} -> 0x{:08x} (addr_purpose:{} cmp_used:{} cmp:{} taken:{})',
+                    pc[0], next_pc_value, addr_purpose, cmp_out_used, cmp_out, jump_taken)
+
+        def cooldown_body():
+            # Continue sequential fetch while Decoder drains the previous jump
+            (pc & self)[0] <= pc_plus_4
+            (jump_processed & self)[0] <= Bits(1)(0)
+
+        body_table = {
+            "idle": idle_body,
+            "cooldown": cooldown_body,
+        }
+
+        jump_fsm = fsm.FSM(fsm_state, transfer_table)
+        jump_fsm.generate(body_table)
+
         return jump_processed[0]

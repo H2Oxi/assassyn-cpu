@@ -10,7 +10,7 @@ from assassyn import utils
 from impl.ip.ips import ALU, Adder
 from impl.gen_cpu.submodules import InsDecoder
 from impl.gen_cpu.decoder_defs import (
-    AluIn1Sel, AluIn2Sel, AddIn1Sel, AddIn2Sel, MemWDataSel, WbDataSel
+    AluIn1Sel, AluIn2Sel, AddIn1Sel, AddIn2Sel, MemWDataSel, WbDataSel, AddrPurpose
 )
 
 ''' Define the pipeline stages'''
@@ -100,20 +100,17 @@ class Decoder(Module):
         # - When a jump instruction is detected, we set waiting_for_jump=1
         # - We keep valid disabled until jump_update_done signal arrives
         # - After jump_update_done, we resume normal operation
-        waiting_for_jump = RegArray(Bits(1), 1)
+        jump_inflight = RegArray(Bits(1), 1, initializer=[0])
 
-        # Update waiting_for_jump register
-        # Set to 1 when we detect a jump instruction
-        # Clear to 0 when jump_update_done is received
-        new_waiting = (base_valid & is_jump).bitcast(Bits(1)) | \
-                      (waiting_for_jump[0] & ~jump_update_done)
-        (waiting_for_jump & self)[0] <= new_waiting
+        jump_request = (base_valid & is_jump).bitcast(Bits(1))
+        next_jump_inflight = jump_request | (jump_inflight[0] & ~jump_update_done)
+        (jump_inflight & self)[0] <= next_jump_inflight
 
-        # Final valid signal: only valid if not waiting for jump
-        valid = base_valid & ~waiting_for_jump[0]
+        # Final valid signal: only valid if no jump in flight
+        valid = base_valid & ~jump_inflight[0]
 
         # Pass all necessary control signals to executor
-        with Condition(valid):
+        with Condition(valid == Bits(1)(1)):
             executor.async_called(
                 fetch_addr=fetch_addr,
                 # ALU control signals
@@ -143,7 +140,7 @@ class Decoder(Module):
             )
 
         # Handle illegal instructions
-        with Condition(~valid):
+        with Condition(decoder.illegal == Bits(1)(1)):
             log("Illegal instruction at address: 0x{:08x}, instruction: 0x{:08x}",
                 fetch_addr, instruction_code)
             finish()
@@ -207,6 +204,7 @@ class Executor(Module):
          adder_use, add_in1_sel, add_in2_sel, add_postproc, addr_purpose,
          mem_read, mem_write, mem_wdata_sel, mem_wstrb,
          wb_data_sel, wb_en, rd_addr, imm) = self.pop_all_ports(False)
+        # Pass-through control signals for downstream modules
 
         # ========== ALU Input Selection ==========
         # Select ALU input 1: ZERO or RS1
@@ -220,10 +218,15 @@ class Executor(Module):
         alu_in2 = (alu_in2_sel == UInt(2)(AluIn2Sel.RS2.value)).select(RS2_data[0], alu_in2)
         alu_in2 = (alu_in2_sel == UInt(2)(AluIn2Sel.IMM.value)).select(imm, alu_in2)
 
+        # Override ALU inputs for branch compare when cmp_out is used
+        cmp_override = (cmp_out_used == Bits(1)(1))
+        alu_in1_final = cmp_override.select(RS1_data[0], alu_in1)
+        alu_in2_final = cmp_override.select(RS2_data[0], alu_in2)
+
         # Instantiate ALU
         alu = ALU(
-            alu_in1=alu_in1,
-            alu_in2=alu_in2,
+            alu_in1=alu_in1_final,
+            alu_in2=alu_in2_final,
             alu_op=alu_op,
             cmp_op=cmp_op,
         )
@@ -289,6 +292,10 @@ class Executor(Module):
             rd_addr=rd_addr,
         )
 
+        with Condition(addr_purpose == UInt(3)(AddrPurpose.BR_TARGET.value)):
+            log('[executor] branch fetch_addr:0x{:08x} rs1:0x{:08x} rs2:0x{:08x} cmp_op:{} cmp_out:{} cmp_used:{} target:0x{:08x}',
+                fetch_addr, RS1_data[0], RS2_data[0], cmp_op, alu.cmp_out, cmp_out_used, adder_result)
+
         # Return dcache and jump control signals for external connections
         # dcache: for memory_accessor
         # Jump control signals: for jump_predictor_wrapper
@@ -348,6 +355,10 @@ class MemoryAccessor(Module):
             (mem_rdata[0].bitcast(UInt(32)) & UInt(32)(0xFF)).bitcast(UInt(32)),  # Zero-extend byte
             wb_data)
 
+        with Condition(wb_data_sel == UInt(3)(WbDataSel.LOAD.value)):
+            log('[memory_accessor] load addr:0x{:08x} data:0x{:08x}',
+                adder_out, mem_rdata[0].bitcast(UInt(32)))
+
         # PC+4 for JAL/JALR return address
         pc_plus4 = fetch_addr.bitcast(UInt(32)) + UInt(32)(4)
         wb_data = (wb_data_sel == UInt(3)(WbDataSel.PC_PLUS4.value)).select(
@@ -389,10 +400,23 @@ class WriteBack(Module):
         """
         # Pop writeback data from ports (sent by MemoryAccessor)
         rd, rd_data, wb_en = self.pop_all_ports(False)
+        prev_wb_en = RegArray(Bits(1), 1, initializer=[0])
+        prev_rd = RegArray(Bits(5), 1, initializer=[0])
+        prev_data = RegArray(Bits(32), 1, initializer=[0])
+
+        same_en = (prev_wb_en[0] == wb_en)
+        same_rd = (prev_rd[0] == rd)
+        same_data = (prev_data[0] == rd_data)
+
+        new_write = (wb_en == Bits(1)(1)) & (~same_en | ~same_rd | ~same_data)
+
+        (prev_wb_en & self)[0] <= wb_en
+        (prev_rd & self)[0] <= rd
+        (prev_data & self)[0] <= rd_data
 
         # Log writeback data for verification
         # Format: [writeback] x<rd>: 0x<rd_data> (matches 0to100.sh requirements)
-        with Condition(wb_en == Bits(1)(1)):
+        with Condition(new_write):
             log('[writeback] x{}: 0x{:08x}', rd.bitcast(UInt(5)), rd_data)
 
         # Return for external connection to regfile_wrapper

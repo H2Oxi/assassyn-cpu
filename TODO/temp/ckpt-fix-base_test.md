@@ -139,3 +139,95 @@ CPU 需要实现完整的控制流逻辑：
 这是一个 CPU 实现的重大缺陷，需要用户确认：
 1. 是否继续修复跳转逻辑？
 2. 还是这是已知的未完成功能，需要在其他 todo 中处理？
+
+---
+
+## ckpt-5.1: jump_predictor_wrapper 模块创建完成
+
+### 修改文件
+- `impl/gen_cpu/downstreams.py`
+- `test/sw/test_base.py`
+- `impl/gen_cpu/design.md`
+
+### 核心改动
+1. 依据 `rules/design/adding.md` 明确 downstream 模块的输入、输出类型以及外部交互约束。
+2. 在 `jump_predictor_wrapper` 中引入两态 FSM（`idle` / `cooldown`），分别负责触发跳转与等待流水线恢复，保证每个跳转只处理一次。
+3. 覆盖 `AddrPurpose.BR_TARGET / IND_TARGET / J_TARGET`，根据 `cmp_out_used`、`cmp_out` 判定跳转是否成立，并在触发时记录日志。
+4. 将 PC RegArray 初始化为 0，避免仿真初期出现 X 值；补充设计文档描述该模块的变量、状态与作用方式。
+
+### 待用户确认
+- 请确认新的 FSM 设计与设计文档描述是否满足规则要求，是否允许进入 Step 5.2（Decoder valid 控制）继续实现。
+
+---
+
+## ckpt-5.2: Decoder 跳转检测与 valid 控制
+
+### 修改文件
+- `impl/gen_cpu/pipestage.py`
+
+### 核心改动
+1. 引入 `jump_inflight` 寄存器跟踪“跳转处理中”状态，结合 `jump_update_done`（已 optional 保护）实现 valid 的暂停与恢复。
+2. 将 valid 判定调整为 `base_valid & ~jump_inflight[0]`，确保跳转发射后只停顿一个周期。
+3. 将非法指令处理逻辑限定在 `decoder.illegal` 触发时，避免把等待周期误判为非法并提前结束仿真。
+
+### 待用户确认
+- 请确认该控制策略符合预期，若 OK 我将继续 Step 5.3（Executor 传递跳转信息）。
+
+---
+
+## ckpt-5.3: Executor 跳转信息输出
+
+### 修改文件
+- `impl/gen_cpu/pipestage.py`
+
+### 核心改动
+1. 保持 `adder_result` 单一赋值路径，并在 MemoryAccessor / jump_predictor 间共享。
+2. 当 `cmp_out_used=1` 时强制比较器使用 `RS1/RS2` 数据源，避免分支比较依赖 ALU 输入选择。
+3. 为分支路径加入调试日志，帮助确认 `cmp_out`、`target` 与 `addr_purpose` 匹配。
+
+### 待用户确认
+- 若输出接口定义满足预期，我将继续 Step 5.4（Fetchor 接入新的 PC 流）。
+
+---
+
+## ckpt-5.4: Fetchor 接收 jump_predictor 的 PC
+
+### 修改文件
+- `impl/gen_cpu/pipestage.py`
+
+### 核心改动
+1. 再次确认 Fetchor 仅读取共享 `pc`，不再保留私有自增路径，保证 PC 唯一写入点为 jump_predictor。
+2. 补充内存访问调试日志，协助定位跳转后的 load 地址与返回数据是否一致。
+
+### 待用户确认
+- 如以上行为与设计预期一致，我会继续 Step 5.5（测试脚本中完成模块连接）。
+
+---
+
+## ckpt-5.5: 测试脚本连接 jump_predictor
+
+### 修改文件
+- `test/sw/test_base.py`
+
+### 核心改动
+1. 在 `build_cpu()` 中确认 `jump_predictor_wrapper` 的实例化与构建顺序，保证依赖关系正确。
+2. 共享 `pc` 与 `jump_update_done` RegArray，并确保 Fetchor/Decoder/jump_predictor 按需求使用。
+3. 驱动顺序：WriteBack → Driver → Fetchor → Decoder → regfile_wrapper → Executor → MemoryAccessor → jump_predictor。
+
+### 待用户确认
+- 若连接方式无误，我将进行 Step 5.6（运行 `python test/sw/test_base.py` 并验证日志）。
+
+---
+
+## ckpt-5.6: 验证结果
+
+### 运行情况
+- 多次运行 `python test/sw/test_base.py`，按照“仅截取末尾 50 行”原则记录关键信息。
+- 测试失败：`Error Sum! 339205 != 630665`，说明累加结果仍与参考值不符。
+
+### 根因分析
+- 分支与 PC 更新逻辑已正常：`jump_predictor` 日志显示 `PC: 0x00000024 -> 0x00000010`。
+- RAW 数据冒险未处理：`addi x15, x15, 0xb8` 刚写回时，下一条 `addi x13, x15, 0x190` 读取到旧的 `x15`=0，使得 `x13` 只等于 `0x190`，循环范围变为 `[0xb8, 0x190)` 共 54 项，导致 sum=339205。
+
+### 建议
+- 需要在 Decoder/Executor 层实现最小的 RAW hazard 防护（插入气泡或前递），确保依赖的寄存器在下一条指令读取时已准备好。

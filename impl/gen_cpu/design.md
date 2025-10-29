@@ -23,6 +23,27 @@
 - downstream: `regfile`
 - downstream: Fetching valid FSM `fetch_check`
 - downstream: valid checker `valid_check`
+- downstream: `jump_predictor_wrapper`
+
+### downstream: jump_predictor_wrapper
+
+- **变量定义**
+  - `pc: RegArray[UInt(32)]` — 全局唯一的程序计数器寄存器，fetch 阶段仅读取，该模块负责写入。
+  - `addr_purpose: UInt(3)` — Executor 传出的跳转类型编码（参考 `AddrPurpose` 枚举）。
+  - `adder_result: UInt(32)` — Executor 根据 `addr_purpose` 计算的目标地址。
+  - `cmp_out: Bits(1)` — 分支比较器输出。
+  - `cmp_out_used: Bits(1)` — 标记 `cmp_out` 是否有效（0 表示 JAL/JALR 这类无条件跳转）。
+  - `jump_processed: RegArray[Bits(1)]` — 与 Decoder 的握手寄存器，表示当前跳转已经完成并允许重新发射指令。
+- **FSM 描述**
+  - 状态 `idle`：默认状态，持续输出 `pc+4`，当检测到 jump 指令时产生一次握手并写入跳转/顺序地址。
+    - 触发条件：`addr_purpose` 分类为 `BR_TARGET`、`IND_TARGET` 或 `J_TARGET`。
+    - 输出行为：根据 `cmp_out_used` 与 `cmp_out` 判定是否采用 `adder_result`，并将 `jump_processed` 置 1。
+  - 状态 `cooldown`：等待流水线刷新，同步地继续输出 `pc+4` 并保持握手为 0。
+    - 触发条件：持续检测 `addr_purpose`，当无 jump 指令时返回 `idle`。
+- **作用方式**
+  - Executor → jump_predictor_wrapper：提供跳转判定所需的所有信号。
+  - jump_predictor_wrapper → Fetchor：写入唯一的 PC 寄存器，驱动取指地址选择。
+  - jump_predictor_wrapper → Decoder：通过 `jump_processed` 在下一周期告知跳转完成，从而恢复指令 valid。
 
 #### Fetchor
 
@@ -73,6 +94,5 @@ workload related parallelism Constraints. ---> Sync design
 我们有没有一种可能把常见的并行流，或者说数据同步的图， 准备好例子，让LLM模仿并自动发掘使用场景潜力。
 
 首先，我们对于每个模块的关键变量以及接口，是一定有tag标记的，我们会标明某个变量他就是对应的比如说ALU 的输出结果，或者比如说是指令操作寄存器的序号。由此，我们就可以基于词，提示AI对某种功能tag下的变量或者接口，按照某种经典的拓扑（我们需要进行总结并准备模版）进行连接。
-
 
 
