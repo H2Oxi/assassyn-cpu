@@ -47,8 +47,8 @@ class RegFile(ExternalSV):
     rs2_data: RegOut[UInt(32)]   # Read data from rs2 (1-cycle delayed)
     # Write port (rd)
     rd_we: WireIn[Bits(1)]       # Write enable for rd (ignored if rd_addr==0)
-    rd_addr: WireIn[UInt(5)]     # Write address for rd (0-31)
-    rd_wdata: WireIn[UInt(32)]   # Write data for rd
+    rd_addr: WireIn[Bits(5)]     # Write address for rd (0-31)
+    rd_wdata: WireIn[Bits(32)]   # Write data for rd
 
     __source__: str = "../impl/ip/ip_repo/regfile.sv"
     __module_name__: str = "regfile"

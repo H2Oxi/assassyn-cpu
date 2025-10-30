@@ -16,7 +16,8 @@ from impl.gen_cpu.pipestage import Fetchor, Decoder, Executor, MemoryAccessor, W
 from impl.gen_cpu.downstreams import regfile_wrapper
 
 
-def top(icache_init_file: str, dcache_init_file: str, depth_log: int = 9):
+def top(icache_init_file: str, dcache_init_file: str, depth_log: int = 9,
+        dcache_addr_offset: int = 0):
     """Build and connect all CPU pipeline stages
 
     This is NOT a Module.build() method - it's a plain function that
@@ -26,6 +27,7 @@ def top(icache_init_file: str, dcache_init_file: str, depth_log: int = 9):
         icache_init_file: Instruction memory initialization file
         dcache_init_file: Data memory initialization file
         depth_log: Log2 of cache depth (default 9 = 512 entries)
+        dcache_addr_offset: Physical address offset when indexing dcache
 
     Pipeline connection order:
         1. Instantiate all modules
@@ -48,6 +50,10 @@ def top(icache_init_file: str, dcache_init_file: str, depth_log: int = 9):
 
     # Stage 5: WriteBack (no dependencies)
     rd, rd_data, wb_en = write_back.build()
+
+    wb_stage_rd = write_back.forward_rd
+    wb_stage_rd_data = write_back.forward_rd_data
+    wb_stage_wb_en = write_back.forward_wb_en
 
     # Stage 1: Fetchor (depends on Decoder for async_called)
     icache_dout = fetchor.build(
@@ -76,6 +82,15 @@ def top(icache_init_file: str, dcache_init_file: str, depth_log: int = 9):
         rd_wdata=rd_data    # From WriteBack
     )
 
+    # Pipeline registers between MemoryAccessor and WriteBack
+    ma_stage_rd = RegArray(UInt(5), 1, initializer=[0])
+    ma_stage_rd_data = RegArray(UInt(32), 1, initializer=[0])
+    ma_stage_wb_en = RegArray(Bits(1), 1, initializer=[0])
+    ma_stage_is_load = RegArray(Bits(1), 1, initializer=[0])
+    ma_stage_load_data = RegArray(UInt(32), 1, initializer=[0])
+    ma_stage_load_rd = RegArray(UInt(5), 1, initializer=[0])
+    ma_stage_load_valid = RegArray(Bits(1), 1, initializer=[0])
+
     # Connect Executor with regfile data
     # Note: rs1_data and rs2_data are RegOut from ExternalSV (RegFile)
     # and can be used directly as Array. imm is passed via Port through
@@ -85,14 +100,32 @@ def top(icache_init_file: str, dcache_init_file: str, depth_log: int = 9):
         RS1_data=rs1_data,  # RegOut can be used as Array directly
         RS2_data=rs2_data,  # RegOut can be used as Array directly
         init_file=dcache_init_file,
-        depth_log=depth_log
+        depth_log=depth_log,
+        addr_offset=dcache_addr_offset,
+        ma_stage_rd=ma_stage_rd,
+        ma_stage_rd_data=ma_stage_rd_data,
+        ma_stage_wb_en=ma_stage_wb_en,
+        ma_stage_is_load=ma_stage_is_load,
+        ma_stage_load_data=ma_stage_load_data,
+        ma_stage_load_rd=ma_stage_load_rd,
+        ma_stage_load_valid=ma_stage_load_valid,
+        wb_stage_rd=wb_stage_rd,
+        wb_stage_rd_data=wb_stage_rd_data,
+        wb_stage_wb_en=wb_stage_wb_en,
     )
 
     # Stage 4: MemoryAccessor (depends on WriteBack for async_called)
     # Connects dcache data and sends selected writeback data to WriteBack
     wb_data = memory_accessor.build(
         write_back=write_back,
-        mem_rdata=dcache.dout
+        mem_rdata=dcache.dout,
+        ma_stage_rd=ma_stage_rd,
+        ma_stage_rd_data=ma_stage_rd_data,
+        ma_stage_wb_en=ma_stage_wb_en,
+        ma_stage_is_load=ma_stage_is_load,
+        ma_stage_load_data=ma_stage_load_data,
+        ma_stage_load_rd=ma_stage_load_rd,
+        ma_stage_load_valid=ma_stage_load_valid,
     )
 
 
